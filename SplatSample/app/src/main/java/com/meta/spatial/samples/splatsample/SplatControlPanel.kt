@@ -41,7 +41,6 @@ import com.meta.spatial.uiset.theme.SpatialTheme
 import com.meta.spatial.uiset.theme.darkSpatialColorScheme
 import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 
-// Panel Instructions
 private val panelHeadingText = "Splat Player"
 private val panelInstructionText = buildAnnotatedString {
   append("Left Stick: Altitude/Yaw | Right Stick: Move\n")
@@ -60,6 +59,7 @@ fun ControlPanel(
     loadSplatFunction: (String) -> Unit,
     rescanFunction: () -> Unit,
     rotateFunction: () -> Unit,
+    requestPermissionFunction: () -> Unit, // New callback
     debugLogLines: List<String>,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
@@ -87,7 +87,6 @@ fun ControlPanel(
 
       Spacer(modifier = Modifier.height(12.dp))
 
-      // --- BUTTONS FOR RESCAN AND ROTATE ---
       Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
@@ -98,9 +97,8 @@ fun ControlPanel(
 
       Spacer(modifier = Modifier.height(12.dp))
 
-      // --- FILE LIST ---
       if (splatList.isEmpty()) {
-        EmptyState()
+        EmptyState(requestPermissionFunction)
       } else {
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
@@ -121,8 +119,6 @@ fun ControlPanel(
       }
 
       Spacer(modifier = Modifier.height(10.dp))
-      
-      // --- DEBUG LOG ---
       DebugLogPanel(debugLogLines)
     }
   }
@@ -153,7 +149,7 @@ private fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier =
 }
 
 @Composable
-private fun EmptyState() {
+private fun EmptyState(requestPermissionFunction: () -> Unit) {
   Box(
       modifier =
           Modifier.fillMaxWidth()
@@ -162,11 +158,22 @@ private fun EmptyState() {
               .padding(14.dp),
       contentAlignment = Alignment.CenterStart,
   ) {
-    Text(
-        text = "No files. Push .ply/.spz to /sdcard/Splats/",
-        style = SpatialTheme.typography.body1,
-        color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "No files found.",
+            style = SpatialTheme.typography.headline2Strong,
+            color = LocalColorScheme.current.primaryAlphaBackground,
+        )
+        Text(
+            text = "1. Ensure files are in /sdcard/Splats/\n2. Ensure Permissions are granted.",
+            style = SpatialTheme.typography.body1,
+            color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
+        )
+        
+        // [FIX] Button to trigger permission manually
+        Spacer(modifier = Modifier.height(4.dp))
+        ActionButton(text = "Grant All Files Access", onClick = requestPermissionFunction)
+    }
   }
 }
 
@@ -211,12 +218,12 @@ private fun DebugLogPanel(lines: List<String>) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
       val show = lines.takeLast(4)
       if (show.isEmpty()) {
-        Text(text = "Log...", style = SpatialTheme.typography.body1) // [Fixed] body1 instead of caption
+        Text(text = "Log...", style = SpatialTheme.typography.body1)
       } else {
         show.forEach { line ->
           Text(
               text = line,
-              style = SpatialTheme.typography.body1, // [Fixed] body1 instead of caption
+              style = SpatialTheme.typography.body1,
               color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.75f),
           )
         }
