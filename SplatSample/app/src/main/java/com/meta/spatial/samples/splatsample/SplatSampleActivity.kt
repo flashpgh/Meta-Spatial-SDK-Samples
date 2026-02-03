@@ -16,10 +16,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import android.view.InputDevice
-import android.view.KeyEvent
 import android.view.MotionEvent
-import android.view.View
-import android.view.ViewGroup
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
@@ -75,10 +72,9 @@ import kotlinx.coroutines.launch
 @OptIn(SpatialSDKExperimentalSplatAPI::class)
 class SplatSampleActivity : AppSystemActivity() {
 
-  private var gltfxEntity: Entity? = null
+  // We no longer use gltfxEntity since we aren't loading the scene file
   private val activityScope = CoroutineScope(Dispatchers.Main)
 
-  private lateinit var environmentEntity: Entity
   private lateinit var skyboxEntity: Entity
   private lateinit var panelEntity: Entity
   private lateinit var splatEntity: Entity
@@ -90,6 +86,7 @@ class SplatSampleActivity : AppSystemActivity() {
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
+  private var hasLoggedInput = false 
 
   // --- CONFIG ---
   private var configMoveSpeed = 0.5f 
@@ -97,17 +94,15 @@ class SplatSampleActivity : AppSystemActivity() {
   private var configRotationX = 180f 
   private var configScale = 1.0f
 
-  // Menu Distance: 2.0m
-  private val panelOffset = 2.0f 
+  // Dynamic Panel Distance
+  private var panelDistance = 2.0f // Start Far
+  private var isPanelNear = false
   
   // Flight State
   private var flightX = 0f
   private var flightY = 0f 
   private var flightZ = 0f 
   private var flightYaw = 0f
-
-  // Raw Input for Debugging
-  private var rawInputLog = "No Input"
 
   private val splatsPublicFolder = "Splats"
   private var externalSplatsDir: File? = null
@@ -143,35 +138,8 @@ class SplatSampleActivity : AppSystemActivity() {
     selectedIndex.value = 0
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
-    loadGLXF { composition ->
-      // [NUCLEAR OPTION] Disable collision on ALL SCENE OBJECTS
-      for (node in composition.nodes) {
-          val e = node.entity
-          if (e.hasComponent<Mesh>()) {
-              val mesh = e.getComponent<Mesh>()
-              mesh.hittable = MeshCollision.NoCollision
-              e.setComponent(mesh)
-          }
-      }
-
-      updateViewOrigin()
-
-      val initial = defaultSplatPath
-      if (initial != null) {
-        initializeSplat(initial)
-        setSplatVisibility(true)
-      }
-    }
-  }
-
-  // [FIX] Force Input Listener on the Root View
-  // Sometimes the Activity dispatch isn't called if a View has focus.
-  override fun onStart() {
-      super.onStart()
-      val rootView = window.decorView.rootView
-      rootView.setOnGenericMotionListener { _, event ->
-          handleInput(event)
-      }
+    // [NUCLEAR FIX] We do NOT load loadGLXF anymore. 
+    // We manually initialize the "Void" scene in onSceneReady.
   }
 
   private fun loadExternalConfig() {
@@ -218,16 +186,15 @@ class SplatSampleActivity : AppSystemActivity() {
     super.onSceneReady()
     registerTestingIntentReceivers()
 
+    // 1. SETUP LIGHTING (Since we deleted the GLXF scene that had it)
     scene.setLightingEnvironment(
-        ambientColor = Vector3(0f),
-        sunColor = Vector3(7.0f, 7.0f, 7.0f),
-        sunDirection = -Vector3(1.0f, 3.0f, -2.0f),
-        environmentIntensity = 0.3f,
+        ambientColor = Vector3(0.1f),
+        sunColor = Vector3(1.0f, 1.0f, 1.0f),
+        sunDirection = -Vector3(1.0f, 3.0f, -2.0f), // Standard overhead sun
+        environmentIntensity = 0.5f,
     )
-
-    scene.updateIBLEnvironment("environment.env")
-    updateViewOrigin()
-
+    
+    // 2. SETUP SKYBOX (So it's not pitch black)
     skyboxEntity =
         Entity.create(
             listOf(
@@ -240,6 +207,10 @@ class SplatSampleActivity : AppSystemActivity() {
             )
         )
 
+    // 3. SETUP VIEW
+    updateViewOrigin()
+
+    // 4. SETUP PANEL
     panelEntity =
         Entity.createPanelEntity(
             R.id.control_panel,
@@ -247,47 +218,47 @@ class SplatSampleActivity : AppSystemActivity() {
             Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.5f, maxHeight = 2.5f),
         )
 
+    // 5. LOAD SPLAT (If found)
+    val initial = defaultSplatPath
+    if (initial != null) {
+      initializeSplat(initial)
+      setSplatVisibility(true)
+    }
+
     systemManager.registerSystem(ControllerListenerSystem())
     
+    // Auto-center panel after 2 seconds
     activityScope.launch {
         delay(2000)
         recenterPanel()
     }
   }
 
-  // [FIX] Centralized Input Logic called by both Activity and View
-  private fun handleInput(event: MotionEvent): Boolean {
+  // [FLIGHT LOGIC - Direct Android Input]
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
           event.action == MotionEvent.ACTION_MOVE) {
         
         val leftX = event.getAxisValue(MotionEvent.AXIS_X)
         val leftY = event.getAxisValue(MotionEvent.AXIS_Y)
-        val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
-        val z = event.getAxisValue(MotionEvent.AXIS_Z)
         
-        val rightY = if (Math.abs(rz) > 0.1f) rz else event.getAxisValue(MotionEvent.AXIS_RY)
-        val rightX = if (Math.abs(z) > 0.1f) z else event.getAxisValue(MotionEvent.AXIS_RX)
+        val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
+        val ry = event.getAxisValue(MotionEvent.AXIS_RY)
+        val z = event.getAxisValue(MotionEvent.AXIS_Z)
+        val rx = event.getAxisValue(MotionEvent.AXIS_RX)
+        
+        val rightY = if (Math.abs(rz) > 0.1f) rz else ry
+        val rightX = if (Math.abs(z) > 0.1f) z else rx
 
         val rTrigger = event.getAxisValue(MotionEvent.AXIS_RTRIGGER)
         val gas = event.getAxisValue(MotionEvent.AXIS_GAS)
         val triggerVal = if (rTrigger > gas) rTrigger else gas
 
-        // Debug Log Update (Throttled)
-        if (System.currentTimeMillis() % 20 == 0L) {
-             // Only if moving
-             if (Math.abs(leftY) > 0.1f || Math.abs(rightX) > 0.1f) {
-                 rawInputLog = "L:%.1f,%.1f R:%.1f,%.1f".format(leftX, leftY, rightX, rightY)
-                 // You can see this in logcat or if we added it to UI
-                 Log.d("INPUT", rawInputLog)
-             }
-        }
-
-        // FLIGHT LOGIC
+        var hasInput = false
         val deadzone = 0.1f
         val rotSpeed = 2.0f
-        var hasInput = false
 
-        // 1. Altitude (Left Stick Y) / Yaw (Left Stick X)
+        // 1. LEFT STICK: Altitude (Y) & Yaw (X)
         val throttle = -leftY
         val yawInput = -leftX
 
@@ -300,16 +271,18 @@ class SplatSampleActivity : AppSystemActivity() {
             hasInput = true
         }
 
-        // 2. Planar Move (Right Stick)
+        // 2. RIGHT STICK
         val stickY = -rightY
         val stickX = rightX
 
         if (triggerVal > 0.5f) {
+            // [MODIFIER] Rotate WORLD Pitch (Look Up/Down)
             if (Math.abs(stickY) > deadzone) {
                 configRotationX += stickY * rotSpeed
                 updateSplatTransform()
             }
         } else {
+            // [NORMAL] Move Plane
             if (Math.abs(stickY) > deadzone || Math.abs(stickX) > deadzone) {
                 val rads = Math.toRadians(flightYaw.toDouble())
                 val cosY = cos(rads).toFloat()
@@ -333,15 +306,9 @@ class SplatSampleActivity : AppSystemActivity() {
             updateViewOrigin()
         }
 
-        return true
+        return true // Consumed event
     }
-    return false
-  }
-
-  // Activity level dispatch
-  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-      if (handleInput(event)) return true
-      return super.dispatchGenericMotionEvent(event)
+    return super.dispatchGenericMotionEvent(event)
   }
 
   fun rotateSplat() {
@@ -360,7 +327,14 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterPanel() {
-      positionPanelInFrontOfUser(panelOffset)
+      // Toggle between Near (0.6m) and Far (2.0m)
+      positionPanelInFrontOfUser(panelDistance)
+  }
+
+  fun togglePanelDistance() {
+      isPanelNear = !isPanelNear
+      panelDistance = if (isPanelNear) 0.6f else 2.0f
+      recenterPanel()
   }
 
   fun resetFlight() {
@@ -425,7 +399,6 @@ class SplatSampleActivity : AppSystemActivity() {
   private fun initializeSplat(splatPath: Uri) {
     appendLog("init: $splatPath")
     
-    // Always recreate fresh to ensure settings apply
     splatEntity =
         Entity.create(
             listOf(
@@ -452,11 +425,9 @@ class SplatSampleActivity : AppSystemActivity() {
     appendLog("Loading: ${newSplatPath.substringAfterLast("/")}")
     val uri = newSplatPath.toUri()
     
-    // [FIX] Handle the case where entity is not initialized (e.g. startup with 0 files)
     if (!::splatEntity.isInitialized) {
         initializeSplat(uri)
     } else {
-        // [FIX] Even if initialized, sometimes recreating is safer if state is bad
         splatEntity.setComponent(Splat(uri))
     }
     setSplatVisibility(false)
@@ -468,7 +439,7 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun setEnvironmentVisiblity(isVisible: Boolean) {
-    // skyboxEntity.setComponent(Visible(isVisible))
+    // Stub
   }
 
   private fun positionPanelInFrontOfUser(distance: Float) {
@@ -496,10 +467,12 @@ class SplatSampleActivity : AppSystemActivity() {
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
+        // A Button: Toggle Distance
         if ((controller.changedButtons and ButtonBits.ButtonA) != 0 &&
             (controller.buttonState and ButtonBits.ButtonA) != 0) {
-          recenterPanel()
+          togglePanelDistance()
         }
+        // B Button: Reset
         if ((controller.changedButtons and ButtonBits.ButtonB) != 0 &&
             (controller.buttonState and ButtonBits.ButtonB) != 0) {
           resetFlight()
@@ -527,18 +500,6 @@ class SplatSampleActivity : AppSystemActivity() {
           )
         },
     )
-  }
-
-  private fun loadGLXF(onLoaded: ((GLXFInfo) -> Unit) = {}): Job {
-    gltfxEntity = Entity.create()
-    return activityScope.launch {
-      glXFManager.inflateGLXF(
-          Uri.parse("apk:///scenes/Composition.glxf"),
-          rootEntity = gltfxEntity!!,
-          keyName = "example_key_name",
-          onLoaded = onLoaded,
-      )
-    }
   }
 
   private fun createSimpleComposePanel(
