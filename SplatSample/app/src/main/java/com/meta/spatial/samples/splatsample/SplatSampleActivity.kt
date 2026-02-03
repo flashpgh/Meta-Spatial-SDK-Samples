@@ -10,7 +10,6 @@ package com.meta.spatial.samples.splatsample
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
@@ -72,17 +71,31 @@ class SplatSampleActivity : AppSystemActivity() {
   // Entity that holds the Splat component for rendering Gaussian Splats
   private lateinit var splatEntity: Entity
 
-  private val splatList: List<String> = listOf("apk://Menlo Park.spz", "apk://Los Angeles.spz")
+  // Dynamic list of splats discovered in assets/ (apk://<filename>)
+  private val splatListState = mutableStateOf<List<String>>(emptyList())
   private var selectedIndex = mutableStateOf(0)
-  private val defaultSplatPath = splatList[0].toUri()
+
+  // Used for the initial load and for distance heuristics (optional)
+  private var defaultSplatPath: Uri? = null
+
   private val delayVisibilityMS = 2000L
+
   // Rotation applied to the Splat to align it with the scene coordinate system
   // -90 degrees on X axis converts from original Splat coordinate space to Spatial SDK space
   private val eulerRotation = Vector3(-90f, 0f, 0f)
+
   private val panelHeight = 1.5f
   private val panelOffset = 2.5f
-  private val laxZ = 4f
-  private val mpkZ = 2.5f
+
+  // Default camera Z distance
+  private val defaultZ = 4f
+
+  // Optional per-splat Z overrides (keep your existing behavior for those legacy names)
+  private val zOverridesByName: Map<String, Float> =
+      mapOf(
+          "Menlo Park.spz" to 2.5f,
+          "Los Angeles.spz" to 4f,
+      )
 
   private val headQuery =
       Query.where { has(AvatarAttachment.id) }
@@ -102,19 +115,36 @@ class SplatSampleActivity : AppSystemActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+
+    // Build the dynamic list FIRST so we can load the first entry.
+    splatListState.value = discoverBundledSplats()
+    selectedIndex.value = 0
+    defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
+
     NetworkedAssetLoader.init(
         File(applicationContext.getCacheDir().canonicalPath),
         OkHttpAssetFetcher(),
     )
+
     loadGLXF { composition ->
       environmentEntity = composition.getNodeByName("Environment").entity
       val environmentMesh = environmentEntity.getComponent<Mesh>()
       environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
       environmentEntity.setComponent(environmentMesh)
+
       floorEntity = composition.getNodeByName("Floor").entity
-      initializeSplat(defaultSplatPath)
-      // Make the Splat visible in the scene
-      setSplatVisibility(true)
+
+      // Initialize the splat entity even if the list is empty (so the app doesn't crash)
+      val initial = defaultSplatPath
+      if (initial != null) {
+        initializeSplat(initial)
+        // Make the Splat visible in the scene
+        setSplatVisibility(true)
+      } else {
+        Log.e("SplatManager", "No .spz/.ply files found in assets/. Add splats to app/src/main/assets/")
+        // Still show environment so the app is usable
+        setEnvironmentVisiblity(true)
+      }
     }
   }
 
@@ -122,14 +152,17 @@ class SplatSampleActivity : AppSystemActivity() {
   override fun onSceneReady() {
     super.onSceneReady()
     registerTestingIntentReceivers()
+
     scene.setLightingEnvironment(
         ambientColor = Vector3(0f),
         sunColor = Vector3(7.0f, 7.0f, 7.0f),
         sunDirection = -Vector3(1.0f, 3.0f, -2.0f),
         environmentIntensity = 0.3f,
     )
+
     scene.updateIBLEnvironment("environment.env")
-    scene.setViewOrigin(0.0f, 0.0f, 2.5f, 90.0f)
+    scene.setViewOrigin(0.0f, 0.0f, defaultZ, 90.0f)
+
     skyboxEntity =
         Entity.create(
             listOf(
@@ -141,25 +174,36 @@ class SplatSampleActivity : AppSystemActivity() {
                 Transform(Pose(Vector3(x = 0f, y = 0f, z = 0f))),
             )
         )
+
     panelEntity =
         Entity.createPanelEntity(
             R.id.control_panel,
             Transform(Pose(Vector3(0f, panelHeight, 0f), Quaternion(0f, 180f, 0f))),
             Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.75f, maxHeight = 2.5f),
         )
+
     systemManager.registerSystem(ControllerListenerSystem())
   }
 
   /**
+   * Returns a list of bundled splat paths (apk://...) by scanning app/src/main/assets/.
+   * Includes *.spz and *.ply only.
+   */
+  private fun discoverBundledSplats(): List<String> {
+    return try {
+      val names = applicationContext.assets.list("")?.toList().orEmpty()
+      names
+          .filter { it.endsWith(".spz", ignoreCase = true) || it.endsWith(".ply", ignoreCase = true) }
+          .sortedWith(String.CASE_INSENSITIVE_ORDER)
+          .map { "apk://$it" }
+    } catch (t: Throwable) {
+      Log.e("SplatManager", "Failed to enumerate assets", t)
+      emptyList()
+    }
+  }
+
+  /**
    * Creates an entity with a Splat component.
-   *
-   * Gaussian Splats are a 3D representation technique that uses millions of small 3D Gaussians to
-   * represent real-world captured scenes with photorealistic quality.
-   *
-   * To create a Splat entity, you need:
-   * 1. Splat component: Points to the .spz or .ply file containing the Gaussian Splat data
-   * 2. Transform component: Positions and rotates the Splat in 3D space
-   * 3. Scale component: Adjusts the size of the Splat
    *
    * Splat files (.ply or .spz) can be loaded from:
    * - Application assets: "apk://filename.spz"
@@ -181,7 +225,8 @@ class SplatSampleActivity : AppSystemActivity() {
                 SupportsLocomotion(),
             )
         )
-    splatEntity?.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
+
+    splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
       Log.d("SplatManager", "Splat loaded EVENT!")
       onSplatLoaded()
     }
@@ -195,46 +240,39 @@ class SplatSampleActivity : AppSystemActivity() {
   /**
    * Loads a new Splat asset into the scene.
    *
-   * This function demonstrates how to dynamically change which Splat is displayed. You can call
-   * this function to switch between different Splat assets at runtime.
-   *
-   * @param newSplatPath Path to the .spz Splat file (e.g., "apk://MySplat.spz" or a URL)
+   * @param newSplatPath Path to the .spz/.ply file
    */
   fun loadSplat(newSplatPath: String) {
+    // Guard: if list is empty or not initialized, do nothing
+    if (!::splatEntity.isInitialized) {
+      Log.w("SplatManager", "Splat entity not initialized yet; ignoring loadSplat($newSplatPath)")
+      return
+    }
 
     if (splatEntity.hasComponent<Splat>()) {
-      // Entity exists with a Splat component
-      var splatComponent = splatEntity.getComponent<Splat>()
-
+      val splatComponent = splatEntity.getComponent<Splat>()
       if (splatComponent.path.toString() == newSplatPath) {
-        // Optimization: Already showing this Splat, no need to reload
-        // This prevents unnecessary file reloading and memory operations
-      } else {
-        // Replace the existing Splat component with a new one pointing to a different file
-        // setComponent() automatically unloads the old Splat from memory and loads the new one
-        splatEntity.setComponent(Splat(newSplatPath.toUri()))
-        recenterScene()
-        setSplatVisibility(false)
+        // Already showing this splat; do nothing
+        return
       }
-    } else {
-      // No Splat Component exists yet, create one
+
+      // Swap splat, hide until load completes
       splatEntity.setComponent(Splat(newSplatPath.toUri()))
+      setSplatVisibility(false)
+      recenterScene()
+    } else {
+      splatEntity.setComponent(Splat(newSplatPath.toUri()))
+      setSplatVisibility(false)
+      recenterScene()
     }
   }
 
   /**
    * Controls the visibility of the Splat in the scene.
-   *
-   * Splats respect the Visible component like other rendered entities. Setting Visible(false) hides
-   * the Splat without unloading it from memory, allowing for fast show/hide toggling.
-   *
-   * @param isSplatVisible true to show the Splat, false to hide it
    */
   fun setSplatVisibility(isSplatVisible: Boolean) {
-
-    // Update the Visible Component on the Entity with a Splat Component
+    if (!::splatEntity.isInitialized) return
     splatEntity.setComponent(Visible(isSplatVisible))
-    // Show environment when the Splat is hidden, hide when the Splat is visible
     setEnvironmentVisiblity(!isSplatVisible)
   }
 
@@ -244,10 +282,15 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterScene() {
-    var z = laxZ
-    if (splatEntity.getComponent<Splat>().path.toString() == defaultSplatPath.toString()) {
-      z = mpkZ
+    val current = if (::splatEntity.isInitialized && splatEntity.hasComponent<Splat>()) {
+      splatEntity.getComponent<Splat>().path.toString()
+    } else {
+      defaultSplatPath?.toString()
     }
+
+    val filename = current?.removePrefix("apk://") ?: ""
+    val z = zOverridesByName[filename] ?: defaultZ
+
     scene.setViewOrigin(0f, 0f, z, 0f)
     panelEntity.setComponent(
         Transform(Pose(Vector3(0f, panelHeight, z - panelOffset), Quaternion(0f, 180f, 0f)))
@@ -255,68 +298,34 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   /**
-   * Positions the panel 2 meters in front of the user's current head position.
-   *
-   * This function:
-   * 1. Queries for the user's head entity using AvatarAttachment
-   * 2. Gets the head's transform to determine forward direction
-   * 3. Projects the forward vector onto the horizontal plane (y = 0)
-   * 4. Positions the panel 2 meters forward from the head
-   * 5. Rotates the panel to face the user
+   * Positions the panel in front of the user's head.
    */
   private fun positionPanelInFrontOfUser(distance: Float) {
-    // Find the user's head entity
-    val head = headQuery.eval().firstOrNull()
-
-    if (head != null) {
-      // Get the head's current pose (position and rotation)
-      val headPose = head.getComponent<Transform>().transform
-      // Get the forward direction vector from the head pose
-      val forward = headPose.forward()
-      // Flatten to horizontal plane by zeroing out the y component
-      forward.y = 0f
-      val forwardNormalized = forward.normalize()
-      // Calculate new position 2 meters in front of the head
-      var newPosition = headPose.t + (forwardNormalized * distance)
-      newPosition.y = panelHeight // Set y position to panel height
-      // Create rotation to make panel face the user
-      val lookRotation = Quaternion.lookRotation(forwardNormalized)
-      // Update the panel's transform
-      panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
-    }
+    val head = headQuery.eval().firstOrNull() ?: return
+    val headPose = head.getComponent<Transform>().transform
+    val forward = headPose.forward()
+    forward.y = 0f
+    val forwardNormalized = forward.normalize()
+    var newPosition = headPose.t + (forwardNormalized * distance)
+    newPosition.y = panelHeight
+    val lookRotation = Quaternion.lookRotation(forwardNormalized)
+    panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
   }
 
   /**
    * System that listens for controller button presses and performs actions.
-   *
-   * This demonstrates how to:
-   * - Query for controller entities in the scene
-   * - Filter for local and active controllers
-   * - Detect button press events (ButtonA and ButtonB)
-   * - Access head tracking data to reposition UI panels
-   *
-   * Button mappings:
-   * - A Button: Repositions the UI panel 2 meters in front of the user's current view direction
-   * - B Button: Resets the view origin and positions the panel in front of the user
-   *
-   * This is a useful starting point for implementing controller-based interactions in your Spatial
-   * SDK application.
    */
   inner class ControllerListenerSystem : SystemBase() {
     override fun execute() {
-      // Query for all entities with Controller component and filter for local controllers
       val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
 
       for (controllerEntity in controllers) {
         val controller = controllerEntity.getComponent<Controller>()
-        // Skip inactive controllers
         if (!controller.isActive) continue
 
-        // Filter for right controller only
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
-        // Check if Button A was just pressed (button state changed and is now pressed)
         if (
             (controller.changedButtons and ButtonBits.ButtonA) != 0 &&
                 (controller.buttonState and ButtonBits.ButtonA) != 0
@@ -324,7 +333,6 @@ class SplatSampleActivity : AppSystemActivity() {
           positionPanelInFrontOfUser(panelOffset)
         }
 
-        // Check if Button B was just pressed
         if (
             (controller.changedButtons and ButtonBits.ButtonB) != 0 &&
                 (controller.buttonState and ButtonBits.ButtonB) != 0
@@ -336,16 +344,15 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   @OptIn(SpatialSDKExperimentalAPI::class)
-  override fun registerPanels(): List<PanelRegistration> {
+  override fun registerPanels(): List<com.meta.spatial.toolkit.PanelRegistration> {
     return listOf(
         createSimpleComposePanel(
             R.id.control_panel,
             ANIMATION_PANEL_WIDTH,
             ANIMATION_PANEL_HEIGHT,
         ) {
-          // Pass the loadSplat function to the UI panel
-          // This allows users to select different Splat assets from the UI
-          ControlPanel(splatList, selectedIndex, ::loadSplat)
+          // Now uses the dynamic splat list from assets/
+          ControlPanel(splatListState.value, selectedIndex, ::loadSplat)
         },
     )
   }
@@ -366,7 +373,7 @@ class SplatSampleActivity : AppSystemActivity() {
       panelId: Int,
       width: Float,
       height: Float,
-      content: @Composable () -> Unit,
+      content: @androidx.compose.runtime.Composable () -> Unit,
   ): ComposeViewPanelRegistration {
     return ComposeViewPanelRegistration(
         panelId,
