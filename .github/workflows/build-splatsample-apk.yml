@@ -30,46 +30,95 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          # `yes` will usually get SIGPIPE once sdkmanager closes stdin;
-          # with pipefail enabled that would fail the step, so we mask it.
+          # Avoid failing the step on harmless SIGPIPE from `yes`
           set +o pipefail
           yes | sdkmanager --licenses > /dev/null || true
           set -o pipefail
 
-      - name: Build (SplatSample)
+      - name: Locate Gradle wrapper
+        id: locate
         shell: bash
-        working-directory: SplatSample
         run: |
           set -euo pipefail
+
+          echo "Repo root contents:"
+          ls -la
+
+          BUILD_DIR=""
+          if [ -f "SplatSample/gradlew" ]; then
+            BUILD_DIR="SplatSample"
+          elif [ -f "./gradlew" ]; then
+            BUILD_DIR="."
+          else
+            # Find the first gradlew in a reasonable depth
+            FOUND="$(find . -maxdepth 4 -type f -name gradlew | head -n 1 || true)"
+            if [ -n "${FOUND}" ]; then
+              BUILD_DIR="$(dirname "${FOUND}")"
+              # strip leading ./ for cleanliness
+              BUILD_DIR="${BUILD_DIR#./}"
+            fi
+          fi
+
+          if [ -z "${BUILD_DIR}" ]; then
+            echo "ERROR: Could not find a gradlew wrapper anywhere in the repo."
+            echo "Searched up to depth 4."
+            exit 1
+          fi
+
+          echo "Using BUILD_DIR=${BUILD_DIR}"
+          echo "BUILD_DIR=${BUILD_DIR}" >> "$GITHUB_OUTPUT"
+
+          echo "Directory listing for ${BUILD_DIR}:"
+          ls -la "${BUILD_DIR}"
+
+      - name: Build (Gradle assembleDebug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_DIR="${{ steps.locate.outputs.BUILD_DIR }}"
+
+          cd "${BUILD_DIR}"
           chmod +x ./gradlew
 
-          # Build whatever variants exist in this repo version.
-          # We *don't* fail the job if a particular task doesn't exist.
-          ./gradlew --no-daemon assembleDebug || true
-          ./gradlew --no-daemon assembleQuestDebug || true
-          ./gradlew --no-daemon assembleRelease || true
-          ./gradlew --no-daemon assemble || true
+          echo "Gradle version:"
+          ./gradlew --version
 
-      - name: Collect APKs
+          echo "Running assembleDebug (this MUST succeed or the job fails):"
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+          echo "Also attempting assembleRelease (if the project supports it):"
+          # If release isn't configured, we don't want to fail the whole job,
+          # but we DO want debug APK.
+          ./gradlew --no-daemon --stacktrace assembleRelease || true
+
+      - name: Collect APKs (search entire repo)
         shell: bash
         run: |
           set -euo pipefail
           rm -rf apks
           mkdir -p apks
 
-          echo "Searching for APKs..."
-          find SplatSample -type f -name "*.apk" \
-            \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
-            -print -exec cp -v "{}" apks/ \;
+          echo "Searching for APKs under typical Gradle output folders..."
+          # Search whole repo; some samples output outside SplatSample directory.
+          mapfile -t APK_LIST < <(
+            find . -type f -name "*.apk" \
+              \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
+              -print
+          )
 
-          echo "Collected files:"
-          ls -lah apks || true
+          if [ "${#APK_LIST[@]}" -eq 0 ]; then
+            echo "ERROR: No APKs found."
+            echo ""
+            echo "Debugging dump: showing any 'build/outputs' folders that exist:"
+            find . -type d -path "*build/outputs*" -maxdepth 6 -print || true
+            echo ""
+            echo "Also listing any AABs (in case the project produced bundles instead of APKs):"
+            find . -type f -name "*.aab" -print || true
+            exit 1
+          fi
 
-          # Hard fail if none were produced
-          test "$(ls -1 apks/*.apk 2>/dev/null | wc -l)" -ge 1
+          echo "Found APKs:"
+          printf '%s\n' "${APK_LIST[@]}"
 
-      - name: Upload APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: SplatSample-APKs
-          path: apks/*.apk
+          for apk in "${APK_LIST[@]}"; do
+            echo "Copying: ${apk}"
