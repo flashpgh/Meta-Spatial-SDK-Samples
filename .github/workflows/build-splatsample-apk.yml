@@ -30,7 +30,7 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          # Avoid failing the step on harmless SIGPIPE from `yes`
+          # Avoid failing on harmless SIGPIPE from `yes`
           set +o pipefail
           yes | sdkmanager --licenses > /dev/null || true
           set -o pipefail
@@ -38,52 +38,79 @@ jobs:
       - name: Install Meta Spatial Editor CLI (Linux)
         shell: bash
         env:
-          # OPTIONAL OVERRIDE:
-          # If auto-discovery fails, set this GitHub Secret to a direct .zip/.tar.gz URL:
-          # Settings -> Secrets and variables -> Actions -> New repository secret
-          # Name: META_SPATIAL_EDITOR_CLI_URL
           META_SPATIAL_EDITOR_CLI_URL: ${{ secrets.META_SPATIAL_EDITOR_CLI_URL }}
         run: |
           set -euo pipefail
 
-          CLI_PAGE="https://developers.meta.com/horizon/downloads/package/meta-spatial-editor-cli-for-linux/"
-          echo "CLI page: ${CLI_PAGE}"
-
-          URL="${META_SPATIAL_EDITOR_CLI_URL:-}"
-
-          if [ -z "${URL}" ]; then
-            echo "No META_SPATIAL_EDITOR_CLI_URL secret provided; attempting to discover direct archive link..."
-            HTML="$(curl -fsSL "${CLI_PAGE}" || true)"
-            if [ -n "${HTML}" ]; then
-              # Try to find any direct archive link present in the HTML
-              URL="$(echo "${HTML}" | grep -Eo 'https://[^"]+\.(zip|tar\.gz|tgz)' | head -n 1 || true)"
-            fi
-          fi
-
-          if [ -z "${URL}" ]; then
-            echo "ERROR: Could not find a direct CLI archive URL automatically."
-            echo "Fix: create a GitHub Actions secret named META_SPATIAL_EDITOR_CLI_URL containing a direct download link"
-            echo "to the Meta Spatial Editor CLI for Linux archive from:"
-            echo "  ${CLI_PAGE}"
+          if [ -z "${META_SPATIAL_EDITOR_CLI_URL:-}" ]; then
+            echo "ERROR: Missing GitHub secret META_SPATIAL_EDITOR_CLI_URL."
             exit 1
           fi
 
-          echo "Downloading CLI archive: ${URL}"
+          echo "Downloading Meta Spatial Editor CLI from: ${META_SPATIAL_EDITOR_CLI_URL}"
           mkdir -p .meta_cli
           cd .meta_cli
-          curl -fL "${URL}" -o cli_archive
 
-          mkdir -p unpack
-          if file cli_archive | grep -qi "zip"; then
-            mv cli_archive cli.zip
-            unzip -q cli.zip -d unpack
-          else
-            mv cli_archive cli.tgz
-            tar -xf cli.tgz -C unpack
-          fi
+          curl -fL "${META_SPATIAL_EDITOR_CLI_URL}" -o cli.zip
 
-          echo "Searching for an executable in the archive..."
+          echo "Downloaded file type:"
+          file cli.zip
+
+          unzip -q cli.zip -d unpack
+
+          echo "Searching for executable CLI..."
           BIN="$(find unpack -type f -perm -111 | head -n 1 || true)"
           if [ -z "${BIN}" ]; then
-            echo "ERROR: No executable found in CLI archive."
-            ech
+            echo "ERROR: No executable found in CLI zip."
+            echo "Zip contents:"
+            find unpack -maxdepth 4 -type f -print
+            exit 1
+          fi
+
+          BIN_ABS="$(pwd)/${BIN}"
+          chmod +x "${BIN_ABS}"
+
+          # Meta docs use this env var name:
+          echo "META_SPATIAL_EDITOR_CLI_PATH=${BIN_ABS}" >> "$GITHUB_ENV"
+          echo "Installed CLI at: ${BIN_ABS}"
+
+      - name: Build (SplatSample) - Debug
+        shell: bash
+        working-directory: SplatSample
+        env:
+          META_SPATIAL_EDITOR_CLI_PATH: ${{ env.META_SPATIAL_EDITOR_CLI_PATH }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+
+          echo "Building Debug APK (runs :app:export -> generates scenes/Composition.glxf)..."
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+          echo "Attempting Release too (may be unsigned)..."
+          ./gradlew --no-daemon --stacktrace assembleRelease || true
+
+      - name: Collect APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf apks
+          mkdir -p apks
+
+          mapfile -t APK_LIST < <(
+            find . -type f -name "*.apk" \
+              \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
+              -print
+          )
+
+          if [ "${#APK_LIST[@]}" -eq 0 ]; then
+            echo "ERROR: No APKs found."
+            find . -type d -path "*build/outputs*" -maxdepth 7 -print || true
+            exit 1
+          fi
+
+          echo "Found APKs:"
+          printf '%s\n' "${APK_LIST[@]}"
+
+          for apk in "${APK_LIST[@]}"; do
+            cp -v "${apk}" apks/
+          done
