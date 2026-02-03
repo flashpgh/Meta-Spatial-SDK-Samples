@@ -83,27 +83,21 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private var defaultSplatPath: Uri? = null
 
-  // [Adjusted] Zero rotation to align standard PLY meshes correctly
+  // Rotation applied to the Splat to align it with the scene coordinate system
   private val eulerRotation = Vector3(0f, 0f, 0f)
 
   private val panelHeight = 1.5f
-  private val panelOffset = 2.5f
-  private val defaultZ = 4f
+  private val panelOffset = 1.5f // Closer panel
+  private val defaultZ = 2f
 
-  // Flight State variables
+  // Flight State
   private var flightX = 0f
   private var flightY = 0f
   private var flightZ = defaultZ
   private var flightYaw = 0f
 
-  // Optional per-splat Z overrides for the legacy sample names
-  private val zOverridesByName: Map<String, Float> =
-      mapOf(
-          "Menlo Park.spz" to 2.5f,
-          "Los Angeles.spz" to 4f,
-      )
-
-  // [Adjusted] Use root files dir, no subfolder needed
+  // App-owned folder on headset storage
+  private val splatsFolderName = "splats"
   private var externalSplatsDir: File? = null
 
   private val headQuery =
@@ -128,12 +122,10 @@ class SplatSampleActivity : AppSystemActivity() {
         OkHttpAssetFetcher(),
     )
 
-    // Compute external folder ONCE
     externalSplatsDir = initExternalSplatsDir()
     externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
     appendLog("external folder: ${externalFolderPathState.value}")
 
-    // Build list before scene inflates
     rebuildSplatList(reason = "startup")
     selectedIndex.value = 0
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
@@ -146,13 +138,16 @@ class SplatSampleActivity : AppSystemActivity() {
 
       floorEntity = composition.getNodeByName("Floor").entity
 
+      // Initialize flight view immediately
+      updateViewOrigin()
+
       val initial = defaultSplatPath
       if (initial != null) {
         appendLog("initial splat: $initial")
         initializeSplat(initial)
         setSplatVisibility(true)
       } else {
-        appendLog("No splats found. Push .spz/.ply into external folder and press Rescan.")
+        appendLog("No splats found. Push .ply/.spz to splats folder.")
         setEnvironmentVisiblity(true)
       }
     }
@@ -172,8 +167,7 @@ class SplatSampleActivity : AppSystemActivity() {
 
     scene.updateIBLEnvironment("environment.env")
     
-    // Initialize flight position
-    flightZ = defaultZ
+    // Set initial view
     updateViewOrigin()
 
     skyboxEntity =
@@ -195,8 +189,8 @@ class SplatSampleActivity : AppSystemActivity() {
             Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.75f, maxHeight = 2.5f),
         )
 
-    // Register our systems
     systemManager.registerSystem(ControllerListenerSystem())
+    // Register our new drone flight system
     systemManager.registerSystem(DroneFlightSystem())
   }
 
@@ -216,55 +210,31 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   private fun rebuildSplatList(reason: String) {
-    val bundled = discoverBundledSplats()
+    // MODIFIED: We ignore bundled splats to remove "Meta nonsense"
+    val bundled = emptyList<String>() 
     val external = discoverExternalSplats()
 
     val combined = (bundled + external).distinct()
     splatListState.value = combined
 
-    appendLog(
-        "rebuildSplatList($reason): bundled=${bundled.size}, external=${external.size}, total=${combined.size}"
-    )
-
-    if (external.isNotEmpty()) {
-      appendLog("external files:")
-      external.take(12).forEach { appendLog("  - ${it.substringAfterLast("/")}") }
-      if (external.size > 12) appendLog("  ... +${external.size - 12} more")
-    } else {
-      appendLog("external files: (none)")
-    }
-  }
-
-  private fun discoverBundledSplats(): List<String> {
-    return try {
-      val names = applicationContext.assets.list("")?.toList().orEmpty()
-      names
-          .filter { it.endsWith(".spz", true) || it.endsWith(".ply", true) }
-          .sortedWith(String.CASE_INSENSITIVE_ORDER)
-          .map { "apk://$it" }
-          .also { appendLog("bundled assets found: ${it.size}") }
-    } catch (t: Throwable) {
-      appendLog("discoverBundledSplats ERROR: ${t.message}")
-      emptyList()
-    }
+    appendLog("rebuildSplatList($reason): found ${combined.size} files")
   }
 
   private fun initExternalSplatsDir(): File? {
     val base = getExternalFilesDir(null)
     if (base == null) return null
-    // [Adjusted] Using root files dir to align with adb scripts
-    return base
+    val dir = File(base, splatsFolderName)
+    if (!dir.exists()) dir.mkdirs()
+    return dir
   }
 
   private fun discoverExternalSplats(): List<String> {
     val dir = externalSplatsDir ?: return emptyList()
-
     val files =
         dir.listFiles()?.toList().orEmpty().filter {
           it.isFile && (it.name.endsWith(".spz", true) || it.name.endsWith(".ply", true))
         }
-
-    return files.sortedBy { it.name.lowercase() }.map { it.toUri().toString() } // file://...
+    return files.sortedBy { it.name.lowercase() }.map { it.toUri().toString() }
   }
 
   private fun appendLog(msg: String) {
@@ -287,7 +257,7 @@ class SplatSampleActivity : AppSystemActivity() {
                     )
                 ),
                 Scale(Vector3(1f)),
-                // [Adjusted] Removed SupportsLocomotion() to allow free flight
+                // MODIFIED: Removed SupportsLocomotion() to allow Drone Flight
             )
         )
 
@@ -313,7 +283,6 @@ class SplatSampleActivity : AppSystemActivity() {
     if (splatEntity.hasComponent<Splat>()) {
       val splatComponent = splatEntity.getComponent<Splat>()
       if (splatComponent.path.toString() == newSplatPath) {
-        appendLog("loadSplat: already showing; no-op")
         return
       }
       splatEntity.setComponent(Splat(newSplatPath.toUri()))
@@ -338,20 +307,12 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterScene() {
-    val currentPath =
-        if (::splatEntity.isInitialized && splatEntity.hasComponent<Splat>())
-            splatEntity.getComponent<Splat>().path.toString()
-        else defaultSplatPath?.toString()
-
-    val filename = currentPath?.substringAfterLast("/") ?: ""
-    val targetZ = zOverridesByName[filename] ?: defaultZ
-
+    // Reset flight to origin
     flightX = 0f
     flightY = 0f
-    flightZ = targetZ
+    flightZ = defaultZ
     flightYaw = 0f
     
-    appendLog("recenterScene: filename=$filename z=$targetZ")
     updateViewOrigin()
     
     panelEntity.setComponent(
@@ -360,6 +321,7 @@ class SplatSampleActivity : AppSystemActivity() {
   }
   
   private fun updateViewOrigin() {
+      // Updates the user's camera position based on flight coordinates
       scene.setViewOrigin(flightX, flightY, flightZ, flightYaw)
   }
 
@@ -375,9 +337,11 @@ class SplatSampleActivity : AppSystemActivity() {
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
   }
 
-  // [New System] Drone Flight Logic (Mode 2)
+  // --- DRONE FLIGHT SYSTEM ---
+  // Controls:
+  // Left Stick: Up/Down (Y), Rotate (Yaw)
+  // Right Stick: Forward/Back (Z), Slide Left/Right (X)
   inner class DroneFlightSystem : SystemBase() {
-      // Speed settings
       private val moveSpeed = 0.05f 
       private val turnSpeed = 1.5f 
       private val deadzone = 0.1f
@@ -394,8 +358,9 @@ class SplatSampleActivity : AppSystemActivity() {
               val attachment = controllerEntity.tryGetComponent<AvatarAttachment>() ?: continue
               
               if (attachment.type == "left_controller") {
-                  // Left Stick: Throttle (Up/Down) & Yaw (Rotate)
-                  val throttle = -controller.thumbstickY // Up is usually -Y in thumbsticks, check per device
+                  // Left Stick: Throttle (Up/Down) & Yaw
+                  // Stick Up is usually negative Y in raw input, so we invert it for World Up
+                  val throttle = -controller.thumbstickY 
                   val yawInput = -controller.thumbstickX
                   
                   if (Math.abs(throttle) > deadzone) {
@@ -414,16 +379,14 @@ class SplatSampleActivity : AppSystemActivity() {
                   val roll = controller.thumbstickX
                   
                   if (Math.abs(pitch) > deadzone || Math.abs(roll) > deadzone) {
-                      // Calculate forward/right vectors based on current Yaw
+                      // Calculate forward vector based on current Yaw
                       val rads = Math.toRadians(flightYaw.toDouble())
                       val cosY = cos(rads).toFloat()
                       val sinY = sin(rads).toFloat()
                       
-                      // Forward vector
+                      // Standard trig for rotation
                       val fwdX = sinY
                       val fwdZ = -cosY
-                      
-                      // Right vector
                       val rightX = cosY
                       val rightZ = sinY
                       
@@ -453,6 +416,7 @@ class SplatSampleActivity : AppSystemActivity() {
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
+        // A Button: Bring Panel to user
         if (
             (controller.changedButtons and ButtonBits.ButtonA) != 0 &&
                 (controller.buttonState and ButtonBits.ButtonA) != 0
@@ -460,6 +424,7 @@ class SplatSampleActivity : AppSystemActivity() {
           positionPanelInFrontOfUser(panelOffset)
         }
 
+        // B Button: Reset Scene / Recenter
         if (
             (controller.changedButtons and ButtonBits.ButtonB) != 0 &&
                 (controller.buttonState and ButtonBits.ButtonB) != 0
