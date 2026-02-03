@@ -51,18 +51,60 @@ jobs:
           mkdir -p .meta_cli
           cd .meta_cli
 
-          curl -fL "${META_SPATIAL_EDITOR_CLI_URL}" -o cli.zip
+          curl -fL "${META_SPATIAL_EDITOR_CLI_URL}" -o cli_download
 
           echo "Downloaded file type:"
-          file cli.zip
+          file cli_download || true
 
-          unzip -q cli.zip -d unpack
+          mkdir -p unpack
+
+          FT="$(file -b cli_download | tr '[:upper:]' '[:lower:]')"
+          echo "Detected: ${FT}"
+
+          if echo "${FT}" | grep -q "zip archive"; then
+            echo "Extracting ZIP..."
+            unzip -q cli_download -d unpack
+
+          elif echo "${FT}" | grep -q "gzip compressed"; then
+            echo "Looks like gzip. Trying tar.gz first..."
+            # Many vendors ship tar.gz but sometimes filename is misleading.
+            if tar -tzf cli_download > /dev/null 2>&1; then
+              echo "Extracting tar.gz..."
+              tar -xzf cli_download -C unpack
+            else
+              echo "Not a tar.gz. Gunzipping to a file and re-detecting..."
+              gunzip -c cli_download > cli_ungz
+              file cli_ungz || true
+
+              FT2="$(file -b cli_ungz | tr '[:upper:]' '[:lower:]')"
+              echo "After gunzip: ${FT2}"
+
+              if echo "${FT2}" | grep -q "tar archive"; then
+                echo "Extracting tar..."
+                tar -xf cli_ungz -C unpack
+              elif echo "${FT2}" | grep -q "zip archive"; then
+                echo "Extracting ZIP (after gunzip)..."
+                unzip -q cli_ungz -d unpack
+              else
+                echo "ERROR: Unknown archive format after gunzip."
+                exit 1
+              fi
+            fi
+
+          elif echo "${FT}" | grep -q "tar archive"; then
+            echo "Extracting tar..."
+            tar -xf cli_download -C unpack
+
+          else
+            echo "ERROR: Unknown archive format."
+            exit 1
+          fi
 
           echo "Searching for executable CLI..."
           BIN="$(find unpack -type f -perm -111 | head -n 1 || true)"
           if [ -z "${BIN}" ]; then
-            echo "ERROR: No executable found in CLI zip."
-            echo "Zip contents:"
+            echo "ERROR: No executable found in extracted archive."
+            echo "Extracted contents:"
             find unpack -maxdepth 4 -type f -print
             exit 1
           fi
@@ -114,3 +156,11 @@ jobs:
           for apk in "${APK_LIST[@]}"; do
             cp -v "${apk}" apks/
           done
+
+          ls -lah apks
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: SplatSample-APKs
+          path: apks/*.apk
