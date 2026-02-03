@@ -24,11 +24,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
-          yes | sdkmanager --licenses
+
+          # `yes` will usually get SIGPIPE once sdkmanager closes stdin;
+          # with pipefail enabled that would fail the step, so we mask it.
+          set +o pipefail
+          yes | sdkmanager --licenses > /dev/null || true
+          set -o pipefail
 
       - name: Build (SplatSample)
         shell: bash
