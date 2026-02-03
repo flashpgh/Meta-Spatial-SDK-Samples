@@ -6,6 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +21,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install SDK packages
+        shell: bash
         run: |
+          set -euo pipefail
           sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
@@ -28,21 +31,39 @@ jobs:
           yes | sdkmanager --licenses
 
       - name: Build (SplatSample)
+        shell: bash
         working-directory: SplatSample
         run: |
+          set -euo pipefail
           chmod +x ./gradlew
 
-          # Try common variants; tolerate missing tasks across versions
+          # Build whatever variants exist in this repo version.
+          # We *don't* fail the job if a particular task doesn't exist.
           ./gradlew --no-daemon assembleDebug || true
           ./gradlew --no-daemon assembleQuestDebug || true
+          ./gradlew --no-daemon assembleRelease || true
           ./gradlew --no-daemon assemble || true
 
-          echo "APK outputs found:"
-          find . -path "*outputs/apk*" -name "*.apk" -print
+      - name: Collect APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf apks
+          mkdir -p apks
+
+          echo "Searching for APKs..."
+          find SplatSample -type f -name "*.apk" \
+            \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
+            -print -exec cp -v "{}" apks/ \;
+
+          echo "Collected files:"
+          ls -lah apks || true
+
+          # Hard fail if none were produced
+          test "$(ls -1 apks/*.apk 2>/dev/null | wc -l)" -ge 1
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: SplatSample-APKs
-          path: |
-            SplatSample/**/outputs/apk/**/*.apk
+          path: apks/*.apk
