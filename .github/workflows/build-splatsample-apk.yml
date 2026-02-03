@@ -41,37 +41,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Repo root contents:"
-          ls -la
-
           BUILD_DIR=""
           if [ -f "SplatSample/gradlew" ]; then
             BUILD_DIR="SplatSample"
           elif [ -f "./gradlew" ]; then
             BUILD_DIR="."
           else
-            # Find the first gradlew in a reasonable depth
             FOUND="$(find . -maxdepth 4 -type f -name gradlew | head -n 1 || true)"
             if [ -n "${FOUND}" ]; then
               BUILD_DIR="$(dirname "${FOUND}")"
-              # strip leading ./ for cleanliness
               BUILD_DIR="${BUILD_DIR#./}"
             fi
           fi
 
           if [ -z "${BUILD_DIR}" ]; then
             echo "ERROR: Could not find a gradlew wrapper anywhere in the repo."
-            echo "Searched up to depth 4."
             exit 1
           fi
 
           echo "Using BUILD_DIR=${BUILD_DIR}"
           echo "BUILD_DIR=${BUILD_DIR}" >> "$GITHUB_OUTPUT"
 
-          echo "Directory listing for ${BUILD_DIR}:"
-          ls -la "${BUILD_DIR}"
-
-      - name: Build (Gradle assembleDebug)
+      - name: Build Debug APK (skip Meta Spatial export)
         shell: bash
         run: |
           set -euo pipefail
@@ -83,13 +74,13 @@ jobs:
           echo "Gradle version:"
           ./gradlew --version
 
-          echo "Running assembleDebug (this MUST succeed or the job fails):"
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          # The samples wire :app:export into the build, and it requires the Meta Spatial Editor CLI.
+          # For CI APK generation, we skip that task.
+          echo "Building Debug APK (skipping :app:export)..."
+          ./gradlew --no-daemon --stacktrace assembleDebug -x :app:export
 
-          echo "Also attempting assembleRelease (if the project supports it):"
-          # If release isn't configured, we don't want to fail the whole job,
-          # but we DO want debug APK.
-          ./gradlew --no-daemon --stacktrace assembleRelease || true
+          echo "Attempting Release APK too (skipping :app:export)..."
+          ./gradlew --no-daemon --stacktrace assembleRelease -x :app:export || true
 
       - name: Collect APKs (search entire repo)
         shell: bash
@@ -99,7 +90,6 @@ jobs:
           mkdir -p apks
 
           echo "Searching for APKs under typical Gradle output folders..."
-          # Search whole repo; some samples output outside SplatSample directory.
           mapfile -t APK_LIST < <(
             find . -type f -name "*.apk" \
               \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
@@ -110,7 +100,7 @@ jobs:
             echo "ERROR: No APKs found."
             echo ""
             echo "Debugging dump: showing any 'build/outputs' folders that exist:"
-            find . -type d -path "*build/outputs*" -maxdepth 6 -print || true
+            find . -type d -path "*build/outputs*" -maxdepth 7 -print || true
             echo ""
             echo "Also listing any AABs (in case the project produced bundles instead of APKs):"
             find . -type f -name "*.aab" -print || true
@@ -122,3 +112,14 @@ jobs:
 
           for apk in "${APK_LIST[@]}"; do
             echo "Copying: ${apk}"
+            cp -v "${apk}" apks/
+          done
+
+          echo "Collected files:"
+          ls -lah apks
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: SplatSample-APKs
+          path: apks/*.apk
