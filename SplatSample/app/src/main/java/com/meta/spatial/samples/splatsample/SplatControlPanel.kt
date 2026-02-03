@@ -5,16 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/**
- * SplatControlPanel.kt
- *
- * UI control panel for the Splat demo app using Jetpack Compose.
- *
- * Updated behavior:
- * - Supports an arbitrary number of splats (scrollable list)
- * - Works with dynamically scanned assets (*.spz, *.ply)
- * - Shows preview image when available, otherwise renders a placeholder tile
- */
 package com.meta.spatial.samples.splatsample
 
 import androidx.compose.foundation.Image
@@ -54,9 +44,6 @@ import com.meta.spatial.uiset.theme.SpatialTheme
 import com.meta.spatial.uiset.theme.darkSpatialColorScheme
 import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 
-/**
- * Physical dimensions of the panel in 3D space (in meters).
- */
 const val ANIMATION_PANEL_WIDTH = 2.048f
 const val ANIMATION_PANEL_HEIGHT = 1.254f
 
@@ -76,6 +63,9 @@ fun ControlPanel(
     splatList: List<String>,
     selectedIndex: MutableState<Int>,
     loadSplatFunction: (String) -> Unit,
+    pickLocalSplatFunction: () -> Unit,
+    debugLogLines: List<String>,
+    rescanBundledFunction: () -> Unit,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
     Column(
@@ -83,7 +73,7 @@ fun ControlPanel(
             Modifier.fillMaxSize()
                 .clip(SpatialTheme.shapes.large)
                 .background(brush = LocalColorScheme.current.panel)
-                .padding(28.dp),
+                .padding(22.dp),
         verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -100,33 +90,77 @@ fun ControlPanel(
           modifier = Modifier.padding(top = 8.dp),
       )
 
-      Spacer(modifier = Modifier.height(18.dp))
+      Spacer(modifier = Modifier.height(14.dp))
 
-      // If no splats were found, show a clear message
+      // Action buttons row
+      Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+      ) {
+        ActionButton(
+            text = "Load from device",
+            onClick = pickLocalSplatFunction,
+            modifier = Modifier.weight(1f),
+        )
+        ActionButton(
+            text = "Rescan",
+            onClick = rescanBundledFunction,
+            modifier = Modifier.weight(1f),
+        )
+      }
+
+      Spacer(modifier = Modifier.height(14.dp))
+
       if (splatList.isEmpty()) {
         EmptyState()
-        return@Column
-      }
-
-      // Scrollable list of splats (supports any count)
-      LazyColumn(
-          modifier = Modifier.fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(14.dp),
-      ) {
-        itemsIndexed(splatList) { index, option ->
-          val isSelected = (index == selectedIndex.value)
-
-          SplatRowItem(
-              splatPath = option,
-              isSelected = isSelected,
-              onClick = {
-                loadSplatFunction(option)
-                selectedIndex.value = index
-              },
-          )
+      } else {
+        // Scrollable list of splats
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          itemsIndexed(splatList) { index, option ->
+            val isSelected = index == selectedIndex.value
+            SplatRowItem(
+                splatPath = option,
+                isSelected = isSelected,
+                onClick = {
+                  loadSplatFunction(option)
+                  selectedIndex.value = index
+                },
+            )
+          }
         }
       }
+
+      Spacer(modifier = Modifier.height(10.dp))
+
+      DebugLogPanel(debugLogLines)
     }
+  }
+}
+
+@Composable
+private fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+  Box(
+      modifier =
+          modifier
+              .clip(RoundedCornerShape(12.dp))
+              .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.10f))
+              .border(
+                  2.dp,
+                  LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.35f),
+                  RoundedCornerShape(12.dp),
+              )
+              .clickable(onClick = onClick)
+              .padding(vertical = 10.dp, horizontal = 12.dp),
+      contentAlignment = Alignment.Center,
+  ) {
+    Text(
+        text = text,
+        style = SpatialTheme.typography.headline2Strong,
+        color = LocalColorScheme.current.primaryAlphaBackground,
+    )
   }
 }
 
@@ -135,19 +169,19 @@ private fun EmptyState() {
   Box(
       modifier =
           Modifier.fillMaxWidth()
-              .clip(RoundedCornerShape(16.dp))
+              .clip(RoundedCornerShape(14.dp))
               .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.06f))
-              .padding(18.dp),
+              .padding(14.dp),
       contentAlignment = Alignment.CenterStart,
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
       Text(
-          text = "No splats found in assets/",
+          text = "No splats available",
           style = SpatialTheme.typography.headline2Strong,
           color = LocalColorScheme.current.primaryAlphaBackground,
       )
       Text(
-          text = "Add *.spz or *.ply files to app/src/main/assets/ and rebuild.",
+          text = "Use “Load from device” to pick a .spz or .ply from headset storage.",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -171,11 +205,10 @@ private fun SplatRowItem(
               .clip(RoundedCornerShape(14.dp))
               .border(borderWidth, borderColor, RoundedCornerShape(14.dp))
               .clickable(onClick = onClick)
-              .padding(12.dp),
-      horizontalArrangement = Arrangement.spacedBy(14.dp),
+              .padding(10.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalAlignment = Alignment.CenterVertically,
   ) {
-    // Preview (optional)
     val previewResource = getSplatPreviewResource(splatPath)
 
     if (previewResource != null) {
@@ -184,8 +217,8 @@ private fun SplatRowItem(
           contentDescription = "Preview of $splatPath",
           modifier =
               Modifier
-                  .height(110.dp)
-                  .fillMaxWidth(0.35f)
+                  .height(88.dp)
+                  .fillMaxWidth(0.32f)
                   .clip(RoundedCornerShape(10.dp)),
           contentScale = ContentScale.Crop,
       )
@@ -195,17 +228,13 @@ private fun SplatRowItem(
           isSelected = isSelected,
           modifier =
               Modifier
-                  .height(110.dp)
-                  .fillMaxWidth(0.35f)
+                  .height(88.dp)
+                  .fillMaxWidth(0.32f)
                   .clip(RoundedCornerShape(10.dp)),
       )
     }
 
-    // Text area
-    Column(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
+    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       Text(
           text = getSplatDisplayName(splatPath),
           style = SpatialTheme.typography.headline2Strong,
@@ -227,10 +256,8 @@ private fun PlaceholderPreviewTile(
     modifier: Modifier = Modifier,
 ) {
   val bg =
-      if (isSelected)
-          selectedBlue.copy(alpha = 0.14f)
-      else
-          LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.08f)
+      if (isSelected) selectedBlue.copy(alpha = 0.14f)
+      else LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.08f)
 
   Box(
       modifier = modifier.background(bg).padding(10.dp),
@@ -244,49 +271,68 @@ private fun PlaceholderPreviewTile(
   }
 }
 
-/**
- * Determines the appropriate color scheme based on system theme.
- */
+@Composable
+private fun DebugLogPanel(lines: List<String>) {
+  Box(
+      modifier =
+          Modifier.fillMaxWidth()
+              .clip(RoundedCornerShape(14.dp))
+              .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.06f))
+              .padding(10.dp),
+  ) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+      Text(
+          text = "Debug log",
+          style = SpatialTheme.typography.headline2Strong,
+          color = LocalColorScheme.current.primaryAlphaBackground,
+      )
+
+      val show = lines.takeLast(8) // keep it readable on panel
+      if (show.isEmpty()) {
+        Text(
+            text = "(no log lines yet)",
+            style = SpatialTheme.typography.body1,
+            color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.65f),
+        )
+      } else {
+        show.forEach { line ->
+          Text(
+              text = line,
+              style = SpatialTheme.typography.body1,
+              color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.75f),
+          )
+        }
+      }
+    }
+  }
+}
+
 @Composable
 fun getPanelTheme(): SpatialColorScheme =
     if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
-/**
- * Optional mapping to preview images. Keep your existing samples, and add more if you want:
- * - Add a drawable under res/drawable
- * - Add a case here for your filename/keyword
- */
 fun getSplatPreviewResource(splatPath: String): Int? {
   return when {
     splatPath.contains("Menlo Park", ignoreCase = true) -> R.drawable.mpk_room
     splatPath.contains("Los Angeles", ignoreCase = true) -> R.drawable.lax_room
     else -> null
-  }
 }
 
-/**
- * Display name from the splat path. Supports both .spz and .ply and strips "apk://".
- */
 fun getSplatDisplayName(splatPath: String): String {
   return splatPath
       .removePrefix("apk://")
       .removePrefix("file://")
-      .removePrefix("https://")
-      .removePrefix("http://")
-      .substringAfterLast("/") // handle any URL-like paths
+      .substringAfterLast("/")
       .removeSuffix(".spz")
       .removeSuffix(".SPZ")
       .removeSuffix(".ply")
       .removeSuffix(".PLY")
 }
 
-/**
- * A short “where did this come from” string. Keeps it readable.
- */
 fun getSplatShortPath(splatPath: String): String {
   return when {
     splatPath.startsWith("apk://") -> "Bundled asset"
-    splatPath.startsWith("file://") -> "Local file"
+    splatPath.startsWith("file://") -> "Loaded from device"
     splatPath.startsWith("http://") || splatPath.startsWith("https://") -> "Network URL"
     else -> "Path"
   }
