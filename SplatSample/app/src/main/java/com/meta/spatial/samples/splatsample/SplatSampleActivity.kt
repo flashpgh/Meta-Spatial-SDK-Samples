@@ -15,6 +15,8 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
+import android.view.InputDevice
+import android.view.MotionEvent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
@@ -93,8 +95,8 @@ class SplatSampleActivity : AppSystemActivity() {
   private var configRotationX = 0f 
   private var configScale = 1.0f
 
-  // [FIX] Pushed menu back to 2.5m
-  private val panelOffset = 2.5f 
+  // Menu Distance: 2.0m
+  private val panelOffset = 2.0f 
   
   // Flight State
   private var flightX = 0f
@@ -137,17 +139,16 @@ class SplatSampleActivity : AppSystemActivity() {
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
-      // [FIX] DISABLE COLLISION ON ENVIRONMENT so teleport arc fails
+      // [FIX] DISABLE COLLISION to prevent default teleport
       environmentEntity = composition.getNodeByName("Environment").entity
       val environmentMesh = environmentEntity.getComponent<Mesh>()
       environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
-      environmentMesh.hittable = MeshCollision.NoCollision // Disable Teleport Surface
+      environmentMesh.hittable = MeshCollision.NoCollision 
       environmentEntity.setComponent(environmentMesh)
 
-      // [FIX] DISABLE COLLISION ON FLOOR so teleport arc fails
       floorEntity = composition.getNodeByName("Floor").entity
       val floorMesh = floorEntity.getComponent<Mesh>()
-      floorMesh.hittable = MeshCollision.NoCollision // Disable Teleport Surface
+      floorMesh.hittable = MeshCollision.NoCollision 
       floorEntity.setComponent(floorMesh)
 
       updateViewOrigin()
@@ -236,7 +237,9 @@ class SplatSampleActivity : AppSystemActivity() {
         )
 
     systemManager.registerSystem(ControllerListenerSystem())
-    systemManager.registerSystem(DroneFlightSystem())
+
+    // Removed broken DroneFlightSystem class to prevent build errors
+    // Flight logic moved to dispatchGenericMotionEvent below
 
     activityScope.launch {
         delay(2000)
@@ -244,78 +247,83 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // [FIX] Using Native Spatial SDK Controller Input System
-  // This bypasses the Android Input Manager which was getting blocked by default Teleport
-  inner class DroneFlightSystem : SystemBase() {
-      private val deadzone = 0.1f
-      private val rotSpeed = 2.0f
+  // [FIX] Drone Flight Logic using Android Input (Guaranteed to compile)
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+      if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+        
+        // --- READ INPUTS ---
+        val leftX = event.getAxisValue(MotionEvent.AXIS_X)
+        val leftY = event.getAxisValue(MotionEvent.AXIS_Y)
+        
+        // Handle variations in right stick mapping
+        val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
+        val ry = event.getAxisValue(MotionEvent.AXIS_RY)
+        val z = event.getAxisValue(MotionEvent.AXIS_Z)
+        val rx = event.getAxisValue(MotionEvent.AXIS_RX)
+        
+        val rightY = if (Math.abs(rz) > 0.1f) rz else ry
+        val rightX = if (Math.abs(z) > 0.1f) z else rx
 
-      override fun execute() {
-          // Query for local controllers
-          val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
-          
-          var hasInput = false
-          
-          for (controllerEntity in controllers) {
-              val controller = controllerEntity.getComponent<Controller>()
-              val attachment = controllerEntity.tryGetComponent<AvatarAttachment>() ?: continue
+        val rTrigger = event.getAxisValue(MotionEvent.AXIS_RTRIGGER)
+        val gas = event.getAxisValue(MotionEvent.AXIS_GAS)
+        val triggerVal = if (rTrigger > gas) rTrigger else gas
 
-              // --- LEFT STICK: Altitude (Y) & Yaw (X) ---
-              if (attachment.type == "left_controller") {
-                  val throttle = controller.thumbstickY
-                  val yawInput = -controller.thumbstickX 
+        // --- APPLY LOGIC ---
+        var hasInput = false
+        val deadzone = 0.1f
+        val rotSpeed = 2.0f
 
-                  if (Math.abs(throttle) > deadzone) {
-                      flightY += throttle * configMoveSpeed
-                      hasInput = true
-                  }
-                  if (Math.abs(yawInput) > deadzone) {
-                      flightYaw += yawInput * configTurnSpeed
-                      hasInput = true
-                  }
-              }
+        // 1. LEFT STICK: Altitude (Y) & Yaw (X)
+        val throttle = -leftY
+        val yawInput = -leftX
 
-              // --- RIGHT STICK: Pitch/Roll + Trigger Modifier ---
-              if (attachment.type == "right_controller") {
-                  val stickY = controller.thumbstickY
-                  val stickX = controller.thumbstickX
-                  val trigger = controller.trigger
+        if (Math.abs(throttle) > deadzone) {
+            flightY += throttle * configMoveSpeed
+            hasInput = true
+        }
+        if (Math.abs(yawInput) > deadzone) {
+            flightYaw += yawInput * configTurnSpeed
+            hasInput = true
+        }
 
-                  // Modifier: Hold Trigger to Rotate World
-                  if (trigger > 0.5f) {
-                       if (Math.abs(stickY) > deadzone) {
-                          configRotationX += stickY * rotSpeed
-                          updateSplatTransform()
-                       }
-                  } 
-                  // Normal: Move Drone
-                  else {
-                      if (Math.abs(stickY) > deadzone || Math.abs(stickX) > deadzone) {
-                          val rads = Math.toRadians(flightYaw.toDouble())
-                          val cosY = cos(rads).toFloat()
-                          val sinY = sin(rads).toFloat()
+        // 2. RIGHT STICK: Modifier Logic
+        val stickY = -rightY
+        val stickX = rightX
 
-                          val fwdX = sinY
-                          val fwdZ = -cosY
-                          val rightX = cosY
-                          val rightZ = sinY
+        if (triggerVal > 0.5f) {
+            // [MODIFIER] Rotate WORLD Pitch (Look Up/Down)
+            if (Math.abs(stickY) > deadzone) {
+                configRotationX += stickY * rotSpeed
+                updateSplatTransform()
+            }
+        } else {
+            // [NORMAL] Move Plane (Forward/Back/Strafe)
+            if (Math.abs(stickY) > deadzone || Math.abs(stickX) > deadzone) {
+                val rads = Math.toRadians(flightYaw.toDouble())
+                val cosY = cos(rads).toFloat()
+                val sinY = sin(rads).toFloat()
 
-                          // Forward is +Y on stick
-                          val dX = (fwdX * stickY) + (rightX * stickX)
-                          val dZ = (fwdZ * stickY) + (rightZ * stickX)
+                val fwdX = sinY
+                val fwdZ = -cosY
+                val rightX = cosY
+                val rightZ = sinY
 
-                          flightX += dX * configMoveSpeed
-                          flightZ += dZ * configMoveSpeed
-                          hasInput = true
-                      }
-                  }
-              }
-          }
+                val dX = (fwdX * stickY) + (rightX * stickX)
+                val dZ = (fwdZ * stickY) + (rightZ * stickX)
 
-          if (hasInput) {
-              updateViewOrigin()
-          }
-      }
+                flightX += dX * configMoveSpeed
+                flightZ += dZ * configMoveSpeed
+                hasInput = true
+            }
+        }
+
+        if (hasInput) {
+            updateViewOrigin()
+        }
+
+        return true // Consumed event
+    }
+    return super.dispatchGenericMotionEvent(event)
   }
 
   fun rotateSplat() {
@@ -327,7 +335,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun updateSplatTransform() {
       if (!::splatEntity.isInitialized) return
-      // Quaternion(x, y, z) - Euler angles in degrees
       val q = Quaternion(configRotationX, 0f, 0f)
       
       splatEntity.setComponent(Transform(Pose(Vector3(0f), q)))
