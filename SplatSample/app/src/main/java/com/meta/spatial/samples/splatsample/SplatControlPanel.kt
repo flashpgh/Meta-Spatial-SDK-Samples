@@ -63,9 +63,9 @@ fun ControlPanel(
     splatList: List<String>,
     selectedIndex: MutableState<Int>,
     loadSplatFunction: (String) -> Unit,
-    pickLocalSplatFunction: () -> Unit,
+    rescanFunction: () -> Unit,
     debugLogLines: List<String>,
-    rescanBundledFunction: () -> Unit,
+    externalFolderPath: String,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
     Column(
@@ -90,31 +90,29 @@ fun ControlPanel(
           modifier = Modifier.padding(top = 8.dp),
       )
 
-      Spacer(modifier = Modifier.height(14.dp))
+      Spacer(modifier = Modifier.height(10.dp))
 
-      // Action buttons row
+      // Folder hint (where to adb push)
+      Text(
+          text = "Device folder: $externalFolderPath",
+          style = SpatialTheme.typography.body1,
+          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
+      )
+
+      Spacer(modifier = Modifier.height(12.dp))
+
       Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
       ) {
-        ActionButton(
-            text = "Load from device",
-            onClick = pickLocalSplatFunction,
-            modifier = Modifier.weight(1f),
-        )
-        ActionButton(
-            text = "Rescan",
-            onClick = rescanBundledFunction,
-            modifier = Modifier.weight(1f),
-        )
+        ActionButton(text = "Rescan", onClick = rescanFunction, modifier = Modifier.weight(1f))
       }
 
-      Spacer(modifier = Modifier.height(14.dp))
+      Spacer(modifier = Modifier.height(12.dp))
 
       if (splatList.isEmpty()) {
         EmptyState()
       } else {
-        // Scrollable list of splats
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -134,7 +132,6 @@ fun ControlPanel(
       }
 
       Spacer(modifier = Modifier.height(10.dp))
-
       DebugLogPanel(debugLogLines)
     }
   }
@@ -176,12 +173,12 @@ private fun EmptyState() {
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
       Text(
-          text = "No splats available",
+          text = "No splats found",
           style = SpatialTheme.typography.headline2Strong,
           color = LocalColorScheme.current.primaryAlphaBackground,
       )
       Text(
-          text = "Use “Load from device” to pick a .spz or .ply from headset storage.",
+          text = "Push .spz/.ply into the device folder above, then press Rescan.",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -287,7 +284,7 @@ private fun DebugLogPanel(lines: List<String>) {
           color = LocalColorScheme.current.primaryAlphaBackground,
       )
 
-      val show = lines.takeLast(8) // keep it readable on panel
+      val show = lines.takeLast(8)
       if (show.isEmpty()) {
         Text(
             text = "(no log lines yet)",
@@ -316,13 +313,16 @@ fun getSplatPreviewResource(splatPath: String): Int? {
     splatPath.contains("Menlo Park", ignoreCase = true) -> R.drawable.mpk_room
     splatPath.contains("Los Angeles", ignoreCase = true) -> R.drawable.lax_room
     else -> null
+  }
 }
 
 fun getSplatDisplayName(splatPath: String): String {
-  return splatPath
-      .removePrefix("apk://")
-      .removePrefix("file://")
-      .substringAfterLast("/")
+  val name =
+      splatPath
+          .removePrefix("apk://")
+          .removePrefix("file://")
+          .substringAfterLast("/")
+  return name
       .removeSuffix(".spz")
       .removeSuffix(".SPZ")
       .removeSuffix(".ply")
@@ -332,7 +332,7 @@ fun getSplatDisplayName(splatPath: String): String {
 fun getSplatShortPath(splatPath: String): String {
   return when {
     splatPath.startsWith("apk://") -> "Bundled asset"
-    splatPath.startsWith("file://") -> "Loaded from device"
+    splatPath.startsWith("file://") -> "Device file"
     splatPath.startsWith("http://") || splatPath.startsWith("https://") -> "Network URL"
     else -> "Path"
   }
