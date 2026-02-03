@@ -47,13 +47,15 @@ import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 const val ANIMATION_PANEL_WIDTH = 2.048f
 const val ANIMATION_PANEL_HEIGHT = 1.254f
 
-private val panelHeadingText = "Splat Sample"
+private val panelHeadingText = "Splat Player"
 private val panelInstructionText = buildAnnotatedString {
+  append("Left Stick: Altitude & Yaw\n")
+  append("Right Stick: Move\n")
   append("Press ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(" to snap the panel in front of you. \nPress ")
+  append(" to snap panel. ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
-  append(" to recenter the view.")
+  append(" to reset.")
 }
 
 private val selectedBlue = Color(0xFF1877F2)
@@ -93,7 +95,7 @@ fun ControlPanel(
       Spacer(modifier = Modifier.height(10.dp))
 
       Text(
-          text = "Device folder: $externalFolderPath",
+          text = "Folder: .../files/splats",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -104,7 +106,7 @@ fun ControlPanel(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
       ) {
-        ActionButton(text = "Rescan", onClick = rescanFunction, modifier = Modifier.weight(1f))
+        ActionButton(text = "Rescan Files", onClick = rescanFunction, modifier = Modifier.weight(1f))
       }
 
       Spacer(modifier = Modifier.height(12.dp))
@@ -172,12 +174,12 @@ private fun EmptyState() {
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
       Text(
-          text = "No splats found",
+          text = "No files found",
           style = SpatialTheme.typography.headline2Strong,
           color = LocalColorScheme.current.primaryAlphaBackground,
       )
       Text(
-          text = "Push .spz/.ply into the device folder above, then press Rescan.",
+          text = "Use ADB to push .ply or .spz files into the app's 'files/splats' directory.",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -205,30 +207,16 @@ private fun SplatRowItem(
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalAlignment = Alignment.CenterVertically,
   ) {
-    val previewResource = getSplatPreviewResource(splatPath)
-
-    if (previewResource != null) {
-      Image(
-          painter = painterResource(id = previewResource),
-          contentDescription = "Preview of $splatPath",
-          modifier =
-              Modifier
-                  .height(88.dp)
-                  .fillMaxWidth(0.32f)
-                  .clip(RoundedCornerShape(10.dp)),
-          contentScale = ContentScale.Crop,
-      )
-    } else {
-      PlaceholderPreviewTile(
-          label = getSplatDisplayName(splatPath),
-          isSelected = isSelected,
-          modifier =
-              Modifier
-                  .height(88.dp)
-                  .fillMaxWidth(0.32f)
-                  .clip(RoundedCornerShape(10.dp)),
-      )
-    }
+    // Simplified: No hardcoded preview logic
+    PlaceholderPreviewTile(
+        label = getSplatDisplayName(splatPath),
+        isSelected = isSelected,
+        modifier =
+            Modifier
+                .height(88.dp)
+                .fillMaxWidth(0.32f)
+                .clip(RoundedCornerShape(10.dp)),
+    )
 
     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
       Text(
@@ -307,13 +295,7 @@ private fun DebugLogPanel(lines: List<String>) {
 fun getPanelTheme(): SpatialColorScheme =
     if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
-fun getSplatPreviewResource(splatPath: String): Int? {
-  return when {
-    splatPath.contains("Menlo Park", ignoreCase = true) -> R.drawable.mpk_room
-    splatPath.contains("Los Angeles", ignoreCase = true) -> R.drawable.lax_room
-    else -> null
-  }
-}
+// Removed: getSplatPreviewResource (hardcoded Meta logic)
 
 fun getSplatDisplayName(splatPath: String): String {
   val name =
@@ -332,7 +314,6 @@ fun getSplatShortPath(splatPath: String): String {
   return when {
     splatPath.startsWith("apk://") -> "Bundled asset"
     splatPath.startsWith("file://") -> "Device file"
-    splatPath.startsWith("http://") || splatPath.startsWith("https://") -> "Network URL"
     else -> "Path"
   }
 }
