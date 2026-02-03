@@ -7,8 +7,10 @@
 
 package com.meta.spatial.samples.splatsample
 
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
@@ -59,6 +61,7 @@ import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(SpatialSDKExperimentalSplatAPI::class)
@@ -81,26 +84,27 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private var defaultSplatPath: Uri? = null
 
-  // Ensure models stand upright
-  private val eulerRotation = Vector3(0f, 0f, 0f)
+  // [FIX] Default rotation -90 to fix "Upside Down" PLY files
+  private var currentRotationX = -90f 
+  private var currentScale = 1.0f
 
-  private val panelHeight = 1.5f
-  private val panelOffset = 1.5f
-  private val defaultZ = 2f
+  private val panelHeight = 1.3f
+  private val panelOffset = 1.0f
+  private val defaultZ = 0f // Start at 0 so we aren't "under" if the model is huge
 
   // Flight State
   private var flightX = 0f
-  private var flightY = 0f
-  private var flightZ = defaultZ
+  private var flightY = 1.7f // Start at eye level
+  private var flightZ = 2.0f // Start back a bit
   private var flightYaw = 0f
 
-  // Input State (Generic Motion Event)
+  // Input State
   private var leftStickX = 0f
   private var leftStickY = 0f
   private var rightStickX = 0f
   private var rightStickY = 0f
 
-  private val splatsFolderName = "splats"
+  private val splatsPublicFolder = "Splats"
   private var externalSplatsDir: File? = null
 
   private val headQuery =
@@ -117,7 +121,10 @@ class SplatSampleActivity : AppSystemActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    appendLog("onCreate: start")
+    
+    if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+        requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 1001)
+    }
 
     NetworkedAssetLoader.init(
         File(applicationContext.cacheDir.canonicalPath),
@@ -126,7 +133,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
     externalSplatsDir = initExternalSplatsDir()
     externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
-    appendLog("external folder: ${externalFolderPathState.value}")
 
     rebuildSplatList(reason = "startup")
     selectedIndex.value = 0
@@ -143,11 +149,9 @@ class SplatSampleActivity : AppSystemActivity() {
 
       val initial = defaultSplatPath
       if (initial != null) {
-        appendLog("initial splat: $initial")
         initializeSplat(initial)
         setSplatVisibility(true)
       } else {
-        appendLog("No splats found. Push .ply/.spz to files/splats.")
         setEnvironmentVisiblity(true)
       }
     }
@@ -189,30 +193,35 @@ class SplatSampleActivity : AppSystemActivity() {
 
     systemManager.registerSystem(ControllerListenerSystem())
     systemManager.registerSystem(DroneFlightSystem())
+
+    // [FIX] Force panel to snap to user after a brief delay to ensure tracking is live
+    activityScope.launch {
+        delay(1500)
+        recenterPanel()
+        appendLog("Panel recentered automatically.")
+    }
   }
 
-  // --- DRONE INPUT HANDLER (Standard Android API) ---
+  // [FIX] Aggressive Input Handling to stop "Stepping"
   override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-    if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
-        event.action == MotionEvent.ACTION_MOVE) {
-
-        // Quest Controller Mapping on Android:
-        // Left Stick: AXIS_X, AXIS_Y
-        // Right Stick: AXIS_Z, AXIS_RZ (or sometimes RX/RY depending on OS version)
+      // Capture ALL joystick events. 
+      // If we don't return true, the system does "Snap Turn" (stepping).
+      if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
         
+        // Map axes
         leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
         leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
         
-        // Check multiple axes for Right Stick to be safe
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
         val rx = event.getAxisValue(MotionEvent.AXIS_RX)
 
-        // Prioritize RZ/Z for standard mapping
+        // Try to find the active right stick axis
         rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
         rightStickX = if (Math.abs(z) > 0.1f) z else rx
-        
+
+        // ALWAYS return true if it's a joystick event to consume it.
         return true
     }
     return super.onGenericMotionEvent(event)
@@ -226,13 +235,8 @@ class SplatSampleActivity : AppSystemActivity() {
       override fun execute() {
           var hasInput = false
 
-          // Mode 2 Flight:
-          // Left Stick Y (Up/Down) -> Altitude
-          // Left Stick X (Left/Right) -> Yaw
-          // Right Stick Y (Up/Down) -> Forward/Back (Pitch)
-          // Right Stick X (Left/Right) -> Strafe (Roll)
-
-          // Throttle (Altitude) - Invert Y so Up is Up
+          // Drone Mode 2
+          // Left Stick: Y=Altitude, X=Yaw
           val throttle = -leftStickY
           val yawInput = -leftStickX
 
@@ -245,7 +249,7 @@ class SplatSampleActivity : AppSystemActivity() {
               hasInput = true
           }
 
-          // Planar Movement
+          // Right Stick: Y=Pitch(Fwd/Back), X=Roll(Strafe)
           val pitch = -rightStickY
           val roll = rightStickX
 
@@ -273,23 +277,44 @@ class SplatSampleActivity : AppSystemActivity() {
       }
   }
 
-  fun recenterScene() {
+  // [FIX] Manual rotation toggle
+  fun rotateSplat() {
+      if (!::splatEntity.isInitialized) return
+      currentRotationX += 90f
+      if (currentRotationX >= 360f) currentRotationX = 0f
+      
+      updateSplatTransform()
+      appendLog("Rotated to X: $currentRotationX")
+  }
+
+  fun updateSplatTransform() {
+      if (!::splatEntity.isInitialized) return
+      val t = splatEntity.getComponent<Transform>()
+      
+      // We keep position 0,0,0. We only rotate X.
+      // Quaternion.eulerAngles is (pitch, yaw, roll) usually
+      val q = Quaternion.fromEuler(Vector3(currentRotationX, 0f, 0f))
+      
+      splatEntity.setComponent(Transform(Pose(Vector3(0f,0f,0f), q)))
+      splatEntity.setComponent(Scale(Vector3(currentScale)))
+  }
+
+  fun recenterPanel() {
+      positionPanelInFrontOfUser(panelOffset)
+  }
+
+  fun resetFlight() {
     flightX = 0f
-    flightY = 0f
-    flightZ = defaultZ
+    flightY = 1.7f // Eye height
+    flightZ = 2.0f
     flightYaw = 0f
     updateViewOrigin()
-    
-    panelEntity.setComponent(
-        Transform(Pose(Vector3(0f, panelHeight, flightZ - panelOffset), Quaternion(0f, 180f, 0f)))
-    )
+    recenterPanel()
   }
 
   private fun updateViewOrigin() {
       scene.setViewOrigin(flightX, flightY, flightZ, flightYaw)
   }
-
-  // --- STANDARD HELPERS ---
 
   fun rescanSplats() {
     appendLog("Rescan pressed")
@@ -305,19 +330,19 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   private fun rebuildSplatList(reason: String) {
-    // Ignore bundled to keep it clean
     val bundled = emptyList<String>() 
     val external = discoverExternalSplats()
     val combined = (bundled + external).distinct()
     splatListState.value = combined
-    appendLog("rebuildSplatList($reason): found ${combined.size} files")
+    appendLog("Found ${combined.size} files")
   }
 
   private fun initExternalSplatsDir(): File? {
-    val base = getExternalFilesDir(null)
-    if (base == null) return null
-    // Use root 'files' dir to match your ADB script
-    return base
+    val publicDir = File(Environment.getExternalStorageDirectory(), splatsPublicFolder)
+    if (!publicDir.exists()) {
+        publicDir.mkdirs()
+    }
+    return publicDir
   }
 
   private fun discoverExternalSplats(): List<String> {
@@ -337,42 +362,35 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   private fun initializeSplat(splatPath: Uri) {
-    appendLog("initializeSplat: $splatPath")
+    appendLog("init: $splatPath")
     splatEntity =
         Entity.create(
             listOf(
                 Splat(splatPath),
-                Transform(
-                    Pose(
-                        Vector3(0.0f, 0.0f, 0.0f),
-                        Quaternion(eulerRotation.x, eulerRotation.y, eulerRotation.z),
-                    )
-                ),
-                Scale(Vector3(1f)),
+                Transform(Pose(Vector3.Zero, Quaternion.Identity)), // Will update in updateSplatTransform
+                Scale(Vector3(currentScale)),
             )
         )
+    
+    // Apply default rotation
+    updateSplatTransform()
+
     splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
-      appendLog("Splat loaded EVENT")
+      appendLog("Splat Loaded")
       onSplatLoaded()
     }
   }
 
   private fun onSplatLoaded() {
-    recenterScene()
     setSplatVisibility(true)
+    // Don't reset flight here, just ensure panel is visible
+    recenterPanel()
   }
 
   fun loadSplat(newSplatPath: String) {
-    appendLog("loadSplat: $newSplatPath")
     if (!::splatEntity.isInitialized) return
-
-    if (splatEntity.hasComponent<Splat>()) {
-      if (splatEntity.getComponent<Splat>().path.toString() == newSplatPath) return
-    }
-    
     splatEntity.setComponent(Splat(newSplatPath.toUri()))
     setSplatVisibility(false)
-    recenterScene()
   }
 
   fun setSplatVisibility(isSplatVisible: Boolean) {
@@ -389,12 +407,19 @@ class SplatSampleActivity : AppSystemActivity() {
   private fun positionPanelInFrontOfUser(distance: Float) {
     val head = headQuery.eval().firstOrNull() ?: return
     val headPose = head.getComponent<Transform>().transform
+    
+    // Get head forward vector, flatten Y so panel stays vertical
     val forward = headPose.forward()
     forward.y = 0f
     val forwardNormalized = forward.normalize()
+    
+    // Position: Head position + (Forward * distance)
     var newPosition = headPose.t + (forwardNormalized * distance)
-    newPosition.y = panelHeight
+    newPosition.y = panelHeight // Force height
+    
+    // Rotation: Look at the forward direction
     val lookRotation = Quaternion.lookRotation(forwardNormalized)
+    
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
   }
 
@@ -409,11 +434,11 @@ class SplatSampleActivity : AppSystemActivity() {
 
         if ((controller.changedButtons and ButtonBits.ButtonA) != 0 &&
             (controller.buttonState and ButtonBits.ButtonA) != 0) {
-          positionPanelInFrontOfUser(panelOffset)
+          recenterPanel()
         }
         if ((controller.changedButtons and ButtonBits.ButtonB) != 0 &&
             (controller.buttonState and ButtonBits.ButtonB) != 0) {
-          recenterScene()
+          resetFlight()
         }
       }
     }
@@ -424,16 +449,16 @@ class SplatSampleActivity : AppSystemActivity() {
     return listOf(
         createSimpleComposePanel(
             R.id.control_panel,
-            ANIMATION_PANEL_WIDTH,
-            ANIMATION_PANEL_HEIGHT,
+            2.0f,
+            1.25f,
         ) {
           ControlPanel(
               splatList = splatListState.value,
               selectedIndex = selectedIndex,
               loadSplatFunction = ::loadSplat,
               rescanFunction = ::rescanSplats,
+              rotateFunction = ::rotateSplat, // NEW
               debugLogLines = debugLogState.value,
-              externalFolderPath = externalFolderPathState.value,
           )
         },
     )
