@@ -5,208 +5,386 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/**
- * SplatControlPanel.kt
- *
- * OVERVIEW: This file defines the UI control panel for the Splat demo app using Jetpack Compose.
- * The panel provides interactive buttons to manipulate splats in real-time.
- *
- * KEY CONCEPTS:
- * - Jetpack Compose: Modern declarative UI framework for Android
- * - @Composable functions: UI building blocks that can be composed together
- * - SpatialTheme: Meta's design system for spatial computing UIs
- *
- * USAGE IN YOUR APP:
- * 1. Import this ControlPanel composable
- * 2. Pass your SplatManager instance to it
- * 3. Register it as a panel in your Activity (see SplatSampleActivity.kt)
- * 4. The panel will appear in your 3D scene as an interactive surface
- */
 package com.meta.spatial.samples.splatsample
 
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.dp
-import com.meta.spatial.uiset.theme.LocalColorScheme
-import com.meta.spatial.uiset.theme.SpatialColorScheme
-import com.meta.spatial.uiset.theme.SpatialTheme
-import com.meta.spatial.uiset.theme.darkSpatialColorScheme
-import com.meta.spatial.uiset.theme.lightSpatialColorScheme
+import android.net.Uri
+import android.os.Bundle
+import android.util.Log
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.ComposeView
+import androidx.core.net.toUri
+import com.meta.spatial.compose.ComposeFeature
+import com.meta.spatial.compose.ComposeViewPanelRegistration
+import com.meta.spatial.core.Entity
+import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Quaternion
+import com.meta.spatial.core.Query
+import com.meta.spatial.core.SpatialFeature
+import com.meta.spatial.core.SpatialSDKExperimentalAPI
+import com.meta.spatial.core.SpatialSDKInternalTestingAPI
+import com.meta.spatial.core.SystemBase
+import com.meta.spatial.core.Vector3
+import com.meta.spatial.okhttp3.OkHttpAssetFetcher
+import com.meta.spatial.runtime.ButtonBits
+import com.meta.spatial.runtime.NetworkedAssetLoader
+import com.meta.spatial.runtime.SceneMaterial
+import com.meta.spatial.splat.SpatialSDKExperimentalSplatAPI
+import com.meta.spatial.splat.Splat
+import com.meta.spatial.splat.SplatFeature
+import com.meta.spatial.splat.SplatLoadEventArgs
+import com.meta.spatial.toolkit.AppSystemActivity
+import com.meta.spatial.toolkit.AvatarAttachment
+import com.meta.spatial.toolkit.Controller
+import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
+import com.meta.spatial.toolkit.GLXFInfo
+import com.meta.spatial.toolkit.Grabbable
+import com.meta.spatial.toolkit.GrabbableType
+import com.meta.spatial.toolkit.Material
+import com.meta.spatial.toolkit.Mesh
+import com.meta.spatial.toolkit.MeshCollision
+import com.meta.spatial.toolkit.PanelRegistration
+import com.meta.spatial.toolkit.PanelStyleOptions
+import com.meta.spatial.toolkit.QuadShapeOptions
+import com.meta.spatial.toolkit.Scale
+import com.meta.spatial.toolkit.SupportsLocomotion
+import com.meta.spatial.toolkit.Transform
+import com.meta.spatial.toolkit.UIPanelSettings
+import com.meta.spatial.toolkit.Visible
+import com.meta.spatial.toolkit.createPanelEntity
+import com.meta.spatial.vr.VRFeature
+import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
-/**
- * Physical dimensions of the panel in 3D space (in meters).
- *
- * PANEL SIZING: These constants define the panel's size when rendered in the 3D scene.
- * - Width: 2.048 meters (~6.7 feet)
- * - Height: 1.254 meters (~4.1 feet)
- *
- * ASPECT RATIO: Width/Height ≈ 1.63:1 (close to golden ratio for pleasant visuals)
- *
- * CUSTOMIZATION: Adjust these values to make the panel larger/smaller in your scene. Maintain
- * aspect ratio to prevent UI distortion.
- */
-const val ANIMATION_PANEL_WIDTH = 2.048f
-const val ANIMATION_PANEL_HEIGHT = 1.254f
+@OptIn(SpatialSDKExperimentalSplatAPI::class)
+class SplatSampleActivity : AppSystemActivity() {
 
-private val panelHeadingText = "Splat Sample"
-private val panelInstructionText = buildAnnotatedString {
-  append("Press ")
-  withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(" to snap the panel in front of you. \nPress ")
-  withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
-  append(" to recenter the view.")
-}
+  private var gltfxEntity: Entity? = null
+  private val activityScope = CoroutineScope(Dispatchers.Main)
 
-@Composable
-fun ControlPanel(
-    splatList: List<String>,
-    selectedIndex: MutableState<Int>,
-    loadSplatFunction: (String) -> Unit,
-) {
-  // Apply SpatialTheme to ensure consistent design across the panel
-  SpatialTheme(colorScheme = getPanelTheme()) {
-    // Main container column with styling
-    Column(
-        modifier =
-            Modifier.fillMaxSize() // Fill the panel's allocated space
-                .clip(SpatialTheme.shapes.large) // Rounded corners
-                .background(brush = LocalColorScheme.current.panel) // Themed background
-                .padding(36.dp), // Inner padding for content
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      // Content column with consistent spacing between elements
-      Column(
-          verticalArrangement = Arrangement.spacedBy(20.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
-      ) {
-        // Panel title
-        Text(
-            text = panelHeadingText,
-            style = SpatialTheme.typography.headline1Strong,
-            color = LocalColorScheme.current.primaryAlphaBackground,
-        )
-        // Instructions for panel controls
-        Text(
-            text = panelInstructionText,
-            style = SpatialTheme.typography.body1,
-            color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-            modifier = Modifier.padding(top = 8.dp),
-        )
+  private lateinit var environmentEntity: Entity
+  private lateinit var skyboxEntity: Entity
+  private lateinit var panelEntity: Entity
+  private lateinit var floorEntity: Entity
+  // Entity that holds the Splat component for rendering Gaussian Splats
+  private lateinit var splatEntity: Entity
 
-        // Dynamically generated load options with large preview images
-        // DYNAMIC UI GENERATION:
-        // - Creates large, clickable preview images side by side
-        // - Images are the dominant UI element with blue border when selected
-        // - Labels appear below each corresponding image
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
-        ) {
-          // val currentIndex = splatManager.getCurrentSplatIndex()
-          splatList.forEachIndexed { index, option ->
-            // Each splat option is displayed as a column with image above button
-            val isSelected = (index == selectedIndex.value)
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-              // Large clickable preview image
-              val previewResource = getSplatPreviewResource(option)
-              if (previewResource != null) {
-                Image(
-                    painter = painterResource(id = previewResource),
-                    contentDescription = "Preview of $option",
-                    modifier =
-                        Modifier.fillMaxWidth()
-                            .height(200.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(
-                                width = if (isSelected) 4.dp else 2.dp,
-                                color =
-                                    if (isSelected) Color(0xFF1877F2)
-                                    else LocalColorScheme.current.primaryAlphaBackground,
-                                shape = RoundedCornerShape(12.dp),
-                            )
-                            .clickable {
-                              loadSplatFunction(option)
-                              // splatManager.loadSplat(option)
-                              selectedIndex.value = index
-                            },
-                    contentScale = ContentScale.Crop,
-                )
-              }
+  // Dynamic list of splats discovered in assets/ (apk://<filename>)
+  private val splatListState = mutableStateOf<List<String>>(emptyList())
+  private var selectedIndex = mutableStateOf(0)
 
-              // Label below image
-              Text(
-                  text = getSplatDisplayName(option),
-                  style = SpatialTheme.typography.headline2Strong,
-                  color =
-                      if (isSelected) Color(0xFF1877F2)
-                      else LocalColorScheme.current.primaryAlphaBackground,
-              )
-            }
-          }
-        }
-      } // End content column
-    } // End main container
-  } // End SpatialTheme
-} // End ControlPanel composable
+  // Used for the initial load and for distance heuristics (optional)
+  private var defaultSplatPath: Uri? = null
 
-/**
- * Determines the appropriate color scheme based on system theme.
- *
- * THEMING IN SPATIAL UIS: Spatial apps should respect the user's system theme preference. This
- * function checks if dark mode is enabled and returns the matching theme.
- *
- * @return SpatialColorScheme - Either dark or light color scheme
- */
-@Composable
-fun getPanelTheme(): SpatialColorScheme =
-    if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
+  private val delayVisibilityMS = 2000L
 
-/**
- * Maps splat file names to their corresponding drawable resource IDs. Used to display preview
- * images for each splat option.
- */
-fun getSplatPreviewResource(splatPath: String): Int? {
-  return when {
-    splatPath.contains("Menlo Park", ignoreCase = true) -> R.drawable.mpk_room
-    splatPath.contains("Los Angeles", ignoreCase = true) -> R.drawable.lax_room
-    else -> null
+  // Rotation applied to the Splat to align it with the scene coordinate system
+  // -90 degrees on X axis converts from original Splat coordinate space to Spatial SDK space
+  private val eulerRotation = Vector3(-90f, 0f, 0f)
+
+  private val panelHeight = 1.5f
+  private val panelOffset = 2.5f
+
+  // Default camera Z distance
+  private val defaultZ = 4f
+
+  // Optional per-splat Z overrides (keep your existing behavior for those legacy names)
+  private val zOverridesByName: Map<String, Float> =
+      mapOf(
+          "Menlo Park.spz" to 2.5f,
+          "Los Angeles.spz" to 4f,
+      )
+
+  private val headQuery =
+      Query.where { has(AvatarAttachment.id) }
+          .filter { isLocal() and by(AvatarAttachment.typeData).isEqualTo("head") }
+
+  // Register all features your app needs. Features add capabilities to the Spatial SDK.
+  override fun registerFeatures(): List<SpatialFeature> {
+    return listOf(
+        VRFeature(this), // Enable VR rendering
+        // SplatFeature: REQUIRED for rendering Gaussian Splats
+        // This feature handles loading, decoding, and rendering .spz Splat files
+        // Must be registered before creating any entities with Splat components
+        SplatFeature(this.spatialContext, systemManager),
+        ComposeFeature(), // Enable Compose UI panels
+    )
   }
-}
 
-/**
- * Extracts a clean display name from the splat file path. Removes "apk://" prefix and ".spz"
- * extension.
- */
-fun getSplatDisplayName(splatPath: String): String {
-  return splatPath.replace("apk://", "").replace(".spz", "")
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+
+    // Build the dynamic list FIRST so we can load the first entry.
+    splatListState.value = discoverBundledSplats()
+    selectedIndex.value = 0
+    defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
+
+    NetworkedAssetLoader.init(
+        File(applicationContext.getCacheDir().canonicalPath),
+        OkHttpAssetFetcher(),
+    )
+
+    loadGLXF { composition ->
+      environmentEntity = composition.getNodeByName("Environment").entity
+      val environmentMesh = environmentEntity.getComponent<Mesh>()
+      environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
+      environmentEntity.setComponent(environmentMesh)
+
+      floorEntity = composition.getNodeByName("Floor").entity
+
+      // Initialize the splat entity even if the list is empty (so the app doesn't crash)
+      val initial = defaultSplatPath
+      if (initial != null) {
+        initializeSplat(initial)
+        // Make the Splat visible in the scene
+        setSplatVisibility(true)
+      } else {
+        Log.e("SplatManager", "No .spz/.ply files found in assets/. Add splats to app/src/main/assets/")
+        // Still show environment so the app is usable
+        setEnvironmentVisiblity(true)
+      }
+    }
+  }
+
+  @OptIn(SpatialSDKInternalTestingAPI::class)
+  override fun onSceneReady() {
+    super.onSceneReady()
+    registerTestingIntentReceivers()
+
+    scene.setLightingEnvironment(
+        ambientColor = Vector3(0f),
+        sunColor = Vector3(7.0f, 7.0f, 7.0f),
+        sunDirection = -Vector3(1.0f, 3.0f, -2.0f),
+        environmentIntensity = 0.3f,
+    )
+
+    scene.updateIBLEnvironment("environment.env")
+    scene.setViewOrigin(0.0f, 0.0f, defaultZ, 90.0f)
+
+    skyboxEntity =
+        Entity.create(
+            listOf(
+                Mesh(Uri.parse("mesh://skybox"), hittable = MeshCollision.NoCollision),
+                Material().apply {
+                  baseTextureAndroidResourceId = R.drawable.skydome
+                  unlit = true
+                },
+                Transform(Pose(Vector3(x = 0f, y = 0f, z = 0f))),
+            )
+        )
+
+    panelEntity =
+        Entity.createPanelEntity(
+            R.id.control_panel,
+            Transform(Pose(Vector3(0f, panelHeight, 0f), Quaternion(0f, 180f, 0f))),
+            Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.75f, maxHeight = 2.5f),
+        )
+
+    systemManager.registerSystem(ControllerListenerSystem())
+  }
+
+  /**
+   * Returns a list of bundled splat paths (apk://...) by scanning app/src/main/assets/.
+   * Includes *.spz and *.ply only.
+   */
+  private fun discoverBundledSplats(): List<String> {
+    return try {
+      val names = applicationContext.assets.list("")?.toList().orEmpty()
+      names
+          .filter { it.endsWith(".spz", ignoreCase = true) || it.endsWith(".ply", ignoreCase = true) }
+          .sortedWith(String.CASE_INSENSITIVE_ORDER)
+          .map { "apk://$it" }
+    } catch (t: Throwable) {
+      Log.e("SplatManager", "Failed to enumerate assets", t)
+      emptyList()
+    }
+  }
+
+  /**
+   * Creates an entity with a Splat component.
+   *
+   * Splat files (.ply or .spz) can be loaded from:
+   * - Application assets: "apk://filename.spz"
+   * - Network URLs: "https://example.com/splat.spz"
+   * - Local files: "file:///path/to/splat.spz"
+   */
+  private fun initializeSplat(splatPath: Uri) {
+    splatEntity =
+        Entity.create(
+            listOf(
+                Splat(splatPath),
+                Transform(
+                    Pose(
+                        Vector3(0.0f, 0.0f, 0.0f),
+                        Quaternion(eulerRotation.x, eulerRotation.y, eulerRotation.z),
+                    )
+                ),
+                Scale(Vector3(1f)),
+                SupportsLocomotion(),
+            )
+        )
+
+    splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
+      Log.d("SplatManager", "Splat loaded EVENT!")
+      onSplatLoaded()
+    }
+  }
+
+  private fun onSplatLoaded() {
+    recenterScene()
+    setSplatVisibility(true)
+  }
+
+  /**
+   * Loads a new Splat asset into the scene.
+   *
+   * @param newSplatPath Path to the .spz/.ply file
+   */
+  fun loadSplat(newSplatPath: String) {
+    // Guard: if list is empty or not initialized, do nothing
+    if (!::splatEntity.isInitialized) {
+      Log.w("SplatManager", "Splat entity not initialized yet; ignoring loadSplat($newSplatPath)")
+      return
+    }
+
+    if (splatEntity.hasComponent<Splat>()) {
+      val splatComponent = splatEntity.getComponent<Splat>()
+      if (splatComponent.path.toString() == newSplatPath) {
+        // Already showing this splat; do nothing
+        return
+      }
+
+      // Swap splat, hide until load completes
+      splatEntity.setComponent(Splat(newSplatPath.toUri()))
+      setSplatVisibility(false)
+      recenterScene()
+    } else {
+      splatEntity.setComponent(Splat(newSplatPath.toUri()))
+      setSplatVisibility(false)
+      recenterScene()
+    }
+  }
+
+  /**
+   * Controls the visibility of the Splat in the scene.
+   */
+  fun setSplatVisibility(isSplatVisible: Boolean) {
+    if (!::splatEntity.isInitialized) return
+    splatEntity.setComponent(Visible(isSplatVisible))
+    setEnvironmentVisiblity(!isSplatVisible)
+  }
+
+  fun setEnvironmentVisiblity(isVisible: Boolean) {
+    environmentEntity.setComponent(Visible(isVisible))
+    skyboxEntity.setComponent(Visible(isVisible))
+  }
+
+  fun recenterScene() {
+    val current = if (::splatEntity.isInitialized && splatEntity.hasComponent<Splat>()) {
+      splatEntity.getComponent<Splat>().path.toString()
+    } else {
+      defaultSplatPath?.toString()
+    }
+
+    val filename = current?.removePrefix("apk://") ?: ""
+    val z = zOverridesByName[filename] ?: defaultZ
+
+    scene.setViewOrigin(0f, 0f, z, 0f)
+    panelEntity.setComponent(
+        Transform(Pose(Vector3(0f, panelHeight, z - panelOffset), Quaternion(0f, 180f, 0f)))
+    )
+  }
+
+  /**
+   * Positions the panel in front of the user's head.
+   */
+  private fun positionPanelInFrontOfUser(distance: Float) {
+    val head = headQuery.eval().firstOrNull() ?: return
+    val headPose = head.getComponent<Transform>().transform
+    val forward = headPose.forward()
+    forward.y = 0f
+    val forwardNormalized = forward.normalize()
+    var newPosition = headPose.t + (forwardNormalized * distance)
+    newPosition.y = panelHeight
+    val lookRotation = Quaternion.lookRotation(forwardNormalized)
+    panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
+  }
+
+  /**
+   * System that listens for controller button presses and performs actions.
+   */
+  inner class ControllerListenerSystem : SystemBase() {
+    override fun execute() {
+      val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
+
+      for (controllerEntity in controllers) {
+        val controller = controllerEntity.getComponent<Controller>()
+        if (!controller.isActive) continue
+
+        val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
+        if (attachment?.type != "right_controller") continue
+
+        if (
+            (controller.changedButtons and ButtonBits.ButtonA) != 0 &&
+                (controller.buttonState and ButtonBits.ButtonA) != 0
+        ) {
+          positionPanelInFrontOfUser(panelOffset)
+        }
+
+        if (
+            (controller.changedButtons and ButtonBits.ButtonB) != 0 &&
+                (controller.buttonState and ButtonBits.ButtonB) != 0
+        ) {
+          recenterScene()
+        }
+      }
+    }
+  }
+
+  @OptIn(SpatialSDKExperimentalAPI::class)
+  override fun registerPanels(): List<com.meta.spatial.toolkit.PanelRegistration> {
+    return listOf(
+        createSimpleComposePanel(
+            R.id.control_panel,
+            ANIMATION_PANEL_WIDTH,
+            ANIMATION_PANEL_HEIGHT,
+        ) {
+          // Now uses the dynamic splat list from assets/
+          ControlPanel(splatListState.value, selectedIndex, ::loadSplat)
+        },
+    )
+  }
+
+  private fun loadGLXF(onLoaded: ((GLXFInfo) -> Unit) = {}): Job {
+    gltfxEntity = Entity.create()
+    return activityScope.launch {
+      glXFManager.inflateGLXF(
+          Uri.parse("apk:///scenes/Composition.glxf"),
+          rootEntity = gltfxEntity!!,
+          keyName = "example_key_name",
+          onLoaded = onLoaded,
+      )
+    }
+  }
+
+  private fun createSimpleComposePanel(
+      panelId: Int,
+      width: Float,
+      height: Float,
+      content: @androidx.compose.runtime.Composable () -> Unit,
+  ): ComposeViewPanelRegistration {
+    return ComposeViewPanelRegistration(
+        panelId,
+        composeViewCreator = { _, ctx -> ComposeView(ctx).apply { setContent { content() } } },
+        settingsCreator = {
+          UIPanelSettings(
+              shape = QuadShapeOptions(width = width, height = height),
+              style = PanelStyleOptions(themeResourceId = R.style.PanelAppThemeTransparent),
+              display = DpPerMeterDisplayOptions(),
+          )
+        },
+    )
+  }
 }
