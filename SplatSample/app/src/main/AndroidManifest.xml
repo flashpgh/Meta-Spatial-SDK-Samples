@@ -2,6 +2,7 @@
 <manifest
   xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:horizonos="http://schemas.horizonos/sdk"
+  package="com.meta.spatial.samples.splatsample"
   android:versionCode="1"
   android:versionName="1.0"
   android:installLocation="auto"
@@ -11,7 +12,11 @@
     horizonos:minSdkVersion="69"
     horizonos:targetSdkVersion="69"
   />
-  <!-- Tell the system this app works in either 3dof or 6dof mode -->
+
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+  <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
   <uses-feature
     android:name="android.hardware.vr.headtracking"
     android:required="true"
@@ -21,17 +26,14 @@
     android:required="false"
   />
   <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
-  <!-- Tell the system this app uses experimental extensions -->
   <uses-feature
     android:name="com.oculus.experimental.enabled"
     android:required="true"
   />
-  <!-- Tell the system this app can render passthrough -->
   <uses-feature
     android:name="com.oculus.feature.PASSTHROUGH"
     android:required="false"
   />
-  <!-- Tell the system this app uses the virtual keyboard extensions -->
   <uses-feature
     android:name="com.oculus.feature.VIRTUAL_KEYBOARD"
     android:required="false"
@@ -47,9 +49,13 @@
     android:required="false"
   />
   <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
-  <!-- Volume Control -->
   <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-  <application android:allowBackup="false" android:label="splat">
+
+  <application 
+      android:allowBackup="false" 
+      android:label="splat"
+      android:requestLegacyExternalStorage="true">
+      
     <meta-data
       android:name="com.oculus.supportedDevices"
       android:value="quest2|questpro|quest3"
@@ -66,7 +72,6 @@
       android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode"
       android:exported="true"
     >
-      <!-- This filter lets the apk show up as a launchable icon. -->
       <intent-filter>
         <action android:name="android.intent.action.MAIN" />
         <category android:name="com.oculus.intent.category.VR" />
