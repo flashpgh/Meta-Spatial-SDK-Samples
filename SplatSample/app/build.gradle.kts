@@ -86,6 +86,9 @@ dependencies {
   debugImplementation(libs.androidx.ui.test.manifest)
   implementation(libs.androidx.material3)
   implementation(libs.androidx.material.icons.extended)
+
+  // REQUIRED for DocumentFile.fromSingleUri(...)
+  implementation("androidx.documentfile:documentfile:1.0.1")
 }
 
 val projectDir = layout.projectDirectory
