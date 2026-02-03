@@ -1,4 +1,4 @@
-name: Build SplatSample APK
+name: Build SplatSample APK (with Spatial export)
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install SDK packages
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
@@ -59,14 +59,82 @@ jobs:
             exit 1
           fi
 
-          echo "Using BUILD_DIR=${BUILD_DIR}"
           echo "BUILD_DIR=${BUILD_DIR}" >> "$GITHUB_OUTPUT"
+          echo "Using BUILD_DIR=${BUILD_DIR}"
 
-      - name: Build Debug APK (skip Meta Spatial export)
+      - name: Install Meta Spatial Editor CLI (Linux)
         shell: bash
+        env:
+          # Optional: If auto-discovery fails, set this as a GitHub Secret with a direct .zip/.tar.gz URL.
+          META_SPATIAL_EDITOR_CLI_URL: ${{ secrets.META_SPATIAL_EDITOR_CLI_URL }}
+        run: |
+          set -euo pipefail
+
+          CLI_PAGE="https://developers.meta.com/horizon/downloads/package/meta-spatial-editor-cli-for-linux/"
+          echo "CLI download page: ${CLI_PAGE}"
+
+          URL="${META_SPATIAL_EDITOR_CLI_URL:-}"
+
+          if [ -z "${URL}" ]; then
+            echo "No META_SPATIAL_EDITOR_CLI_URL secret provided; attempting auto-discovery..."
+            HTML="$(curl -fsSL "${CLI_PAGE}" || true)"
+            if [ -n "${HTML}" ]; then
+              # Try to find a direct archive link in the page HTML.
+              URL="$(echo "${HTML}" | grep -Eo 'https://[^"]+\.(zip|tar\.gz|tgz)' | head -n 1 || true)"
+            fi
+          fi
+
+          if [ -z "${URL}" ]; then
+            echo "ERROR: Could not auto-discover a direct CLI download URL."
+            echo "Set a GitHub Actions secret named META_SPATIAL_EDITOR_CLI_URL to the direct .zip/.tar.gz link."
+            echo "Page reference: ${CLI_PAGE}"
+            exit 1
+          fi
+
+          echo "Downloading CLI archive: ${URL}"
+          mkdir -p .meta_cli
+          cd .meta_cli
+
+          curl -fL "${URL}" -o cli_archive
+
+          # Try unzip first, then tar.
+          mkdir -p unpack
+          if file cli_archive | grep -qi "zip"; then
+            mv cli_archive cli.zip
+            unzip -q cli.zip -d unpack
+          else
+            mv cli_archive cli.tgz
+            tar -xf cli.tgz -C unpack
+          fi
+
+          echo "Looking for an executable CLI binary..."
+          BIN="$(find unpack -type f -perm -111 | head -n 1 || true)"
+          if [ -z "${BIN}" ]; then
+            echo "ERROR: No executable found in the archive."
+            echo "Contents:"
+            find unpack -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+          BIN_ABS="$(pwd)/${BIN}"
+          chmod +x "${BIN_ABS}"
+
+          # Meta documents this env var for the CLI path.
+          echo "META_SPATIAL_EDITOR_CLI_PATH=${BIN_ABS}" >> "$GITHUB_ENV"
+          echo "Installed CLI at: ${BIN_ABS}"
+
+      - name: Build Debug APK (export enabled)
+        shell: bash
+        env:
+          META_SPATIAL_EDITOR_CLI_PATH: ${{ env.META_SPATIAL_EDITOR_CLI_PATH }}
         run: |
           set -euo pipefail
           BUILD_DIR="${{ steps.locate.outputs.BUILD_DIR }}"
+
+          if [ -z "${META_SPATIAL_EDITOR_CLI_PATH:-}" ]; then
+            echo "ERROR: META_SPATIAL_EDITOR_CLI_PATH is not set."
+            exit 1
+          fi
 
           cd "${BUILD_DIR}"
           chmod +x ./gradlew
@@ -74,22 +142,19 @@ jobs:
           echo "Gradle version:"
           ./gradlew --version
 
-          # The samples wire :app:export into the build, and it requires the Meta Spatial Editor CLI.
-          # For CI APK generation, we skip that task.
-          echo "Building Debug APK (skipping :app:export)..."
-          ./gradlew --no-daemon --stacktrace assembleDebug -x :app:export
+          echo "Building Debug (this will run :app:export using the CLI)..."
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
-          echo "Attempting Release APK too (skipping :app:export)..."
-          ./gradlew --no-daemon --stacktrace assembleRelease -x :app:export || true
+          echo "Attempting Release too (may produce unsigned release APK)..."
+          ./gradlew --no-daemon --stacktrace assembleRelease || true
 
-      - name: Collect APKs (search entire repo)
+      - name: Collect APKs
         shell: bash
         run: |
           set -euo pipefail
           rm -rf apks
           mkdir -p apks
 
-          echo "Searching for APKs under typical Gradle output folders..."
           mapfile -t APK_LIST < <(
             find . -type f -name "*.apk" \
               \( -path "*build/outputs/apk*" -o -path "*outputs/apk*" \) \
@@ -98,12 +163,7 @@ jobs:
 
           if [ "${#APK_LIST[@]}" -eq 0 ]; then
             echo "ERROR: No APKs found."
-            echo ""
-            echo "Debugging dump: showing any 'build/outputs' folders that exist:"
             find . -type d -path "*build/outputs*" -maxdepth 7 -print || true
-            echo ""
-            echo "Also listing any AABs (in case the project produced bundles instead of APKs):"
-            find . -type f -name "*.aab" -print || true
             exit 1
           fi
 
@@ -111,11 +171,9 @@ jobs:
           printf '%s\n' "${APK_LIST[@]}"
 
           for apk in "${APK_LIST[@]}"; do
-            echo "Copying: ${apk}"
             cp -v "${apk}" apks/
           done
 
-          echo "Collected files:"
           ls -lah apks
 
       - name: Upload APKs
