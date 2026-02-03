@@ -9,6 +9,7 @@ package com.meta.spatial.samples.splatsample
 
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
@@ -70,31 +71,26 @@ class SplatSampleActivity : AppSystemActivity() {
   private lateinit var floorEntity: Entity
   private lateinit var splatEntity: Entity
 
-  // UI state
   private val splatListState = mutableStateOf<List<String>>(emptyList())
   private val selectedIndex = mutableStateOf(0)
-
-  // Zero-trust debug log lines shown in UI panel
   private val debugLogState = mutableStateOf<List<String>>(emptyList())
+  private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
 
-  // Rotation applied to the Splat to align it with the scene coordinate system
   private val eulerRotation = Vector3(-90f, 0f, 0f)
-
   private val panelHeight = 1.5f
   private val panelOffset = 2.5f
   private val defaultZ = 4f
 
-  // Optional per-splat Z overrides for the legacy sample names
   private val zOverridesByName: Map<String, Float> =
       mapOf(
           "Menlo Park.spz" to 2.5f,
           "Los Angeles.spz" to 4f,
       )
 
-  // App-owned folder on headset storage: no special permissions needed
   private val splatsFolderName = "splats"
+  private var externalSplatsDir: File? = null
 
   private val headQuery =
       Query.where { has(AvatarAttachment.id) }
@@ -110,7 +106,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-
     appendLog("onCreate: start")
 
     NetworkedAssetLoader.init(
@@ -118,10 +113,10 @@ class SplatSampleActivity : AppSystemActivity() {
         OkHttpAssetFetcher(),
     )
 
-    // Ensure app-owned folder exists (for adb push)
-    ensureSplatsFolder()
+    externalSplatsDir = initCanonicalExternalSplatsDir()
+    externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
+    appendLog("external folder (canonical): ${externalFolderPathState.value}")
 
-    // Build list before scene inflates
     rebuildSplatList(reason = "startup")
     selectedIndex.value = 0
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
@@ -140,7 +135,7 @@ class SplatSampleActivity : AppSystemActivity() {
         initializeSplat(initial)
         setSplatVisibility(true)
       } else {
-        appendLog("No splats found. Add .spz/.ply to app assets or push to splats folder.")
+        appendLog("No splats found. Push .spz/.ply into external folder and press Rescan.")
         setEnvironmentVisiblity(true)
       }
     }
@@ -183,11 +178,10 @@ class SplatSampleActivity : AppSystemActivity() {
     systemManager.registerSystem(ControllerListenerSystem())
   }
 
-  /** Public: called by UI panel */
   fun rescanSplats() {
-    appendLog("rescanSplats: requested")
+    appendLog("Rescan pressed")
     rebuildSplatList(reason = "user_rescan")
-    // Clamp selected index if list changed
+
     val list = splatListState.value
     if (list.isEmpty()) {
       selectedIndex.value = 0
@@ -208,7 +202,14 @@ class SplatSampleActivity : AppSystemActivity() {
     appendLog(
         "rebuildSplatList($reason): bundled=${bundled.size}, external=${external.size}, total=${combined.size}"
     )
-    if (combined.isNotEmpty()) appendLog("top: ${combined.first()}")
+
+    appendLog("external scan dir: ${externalSplatsDir?.absolutePath}")
+    if (external.isNotEmpty()) {
+      appendLog("external files:")
+      external.forEach { appendLog("  - ${it.substringAfterLast("/")}") }
+    } else {
+      appendLog("external files: (none)")
+    }
   }
 
   private fun discoverBundledSplats(): List<String> {
@@ -218,49 +219,60 @@ class SplatSampleActivity : AppSystemActivity() {
           .filter { it.endsWith(".spz", true) || it.endsWith(".ply", true) }
           .sortedWith(String.CASE_INSENSITIVE_ORDER)
           .map { "apk://$it" }
-          .also { appendLog("discoverBundledSplats: ${it.size}") }
     } catch (t: Throwable) {
-      appendLog("discoverBundledSplats: ERROR: ${t.message}")
+      appendLog("discoverBundledSplats ERROR: ${t.message}")
       emptyList()
     }
   }
 
-  private fun ensureSplatsFolder(): File? {
-    val base = getExternalFilesDir(null)
-    if (base == null) {
-      appendLog("ensureSplatsFolder: external files dir is null")
-      return null
+  /**
+   * Build the exact path you used with adb:
+   * /sdcard/Android/data/<package>/files/splats
+   */
+  private fun initCanonicalExternalSplatsDir(): File? {
+    return try {
+      val sd = Environment.getExternalStorageDirectory() // /sdcard
+      val dir = File(sd, "Android/data/$packageName/files/$splatsFolderName")
+      if (!dir.exists()) dir.mkdirs()
+
+      appendLog("initCanonicalExternalSplatsDir: exists=${dir.exists()} canRead=${dir.canRead()}")
+      dir
+    } catch (t: Throwable) {
+      appendLog("initCanonicalExternalSplatsDir ERROR: ${t.message}")
+      null
     }
-    val dir = File(base, splatsFolderName)
-    if (!dir.exists()) dir.mkdirs()
-    appendLog("splats folder: ${dir.absolutePath}")
-    return dir
   }
 
   private fun discoverExternalSplats(): List<String> {
-    val dir = ensureSplatsFolder() ?: return emptyList()
+    val dir = externalSplatsDir ?: return emptyList()
+
+    // Extra diagnostics
+    appendLog("discoverExternalSplats: exists=${dir.exists()} canRead=${dir.canRead()}")
+
+    val list = dir.listFiles()
+    if (list == null) {
+      appendLog("discoverExternalSplats: listFiles() returned null")
+      return emptyList()
+    }
+
     val files =
-        dir.listFiles()?.toList().orEmpty().filter {
+        list.toList().filter {
           it.isFile && (it.name.endsWith(".spz", true) || it.name.endsWith(".ply", true))
         }
 
-    val out =
-        files
-            .sortedBy { it.name.lowercase() }
-            .map { it.toUri().toString() } // file://...
-    appendLog("discoverExternalSplats: ${out.size}")
-    return out
+    appendLog("discoverExternalSplats: totalEntries=${list.size} splatFiles=${files.size}")
+
+    return files.sortedBy { it.name.lowercase() }.map { it.toUri().toString() }
   }
 
   private fun appendLog(msg: String) {
     Log.d("SplatManager", msg)
     val now = System.currentTimeMillis() % 100000
     val line = "${now}ms | $msg"
-    debugLogState.value = (debugLogState.value + line).takeLast(80)
+    debugLogState.value = (debugLogState.value + line).takeLast(60)
   }
 
   private fun initializeSplat(splatPath: Uri) {
-    appendLog("initializeSplat: $splatPath")
     splatEntity =
         Entity.create(
             listOf(
@@ -290,17 +302,11 @@ class SplatSampleActivity : AppSystemActivity() {
   fun loadSplat(newSplatPath: String) {
     appendLog("loadSplat: $newSplatPath")
 
-    if (!::splatEntity.isInitialized) {
-      appendLog("WARNING: splatEntity not initialized yet; ignoring")
-      return
-    }
+    if (!::splatEntity.isInitialized) return
 
     if (splatEntity.hasComponent<Splat>()) {
       val splatComponent = splatEntity.getComponent<Splat>()
-      if (splatComponent.path.toString() == newSplatPath) {
-        appendLog("loadSplat: already showing; no-op")
-        return
-      }
+      if (splatComponent.path.toString() == newSplatPath) return
       splatEntity.setComponent(Splat(newSplatPath.toUri()))
       setSplatVisibility(false)
       recenterScene()
@@ -330,8 +336,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
     val filename = currentPath?.substringAfterLast("/") ?: ""
     val z = zOverridesByName[filename] ?: defaultZ
-
-    appendLog("recenterScene: filename=$filename z=$z")
     scene.setViewOrigin(0f, 0f, z, 0f)
     panelEntity.setComponent(
         Transform(Pose(Vector3(0f, panelHeight, z - panelOffset), Quaternion(0f, 180f, 0f)))
@@ -391,7 +395,7 @@ class SplatSampleActivity : AppSystemActivity() {
               loadSplatFunction = ::loadSplat,
               rescanFunction = ::rescanSplats,
               debugLogLines = debugLogState.value,
-              externalFolderPath = ensureSplatsFolder()?.absolutePath ?: "(unavailable)",
+              externalFolderPath = externalFolderPathState.value,
           )
         },
     )
