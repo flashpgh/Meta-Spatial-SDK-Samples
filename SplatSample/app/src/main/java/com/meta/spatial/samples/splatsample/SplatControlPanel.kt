@@ -13,16 +13,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -47,256 +43,97 @@ import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 const val ANIMATION_PANEL_WIDTH = 2.048f
 const val ANIMATION_PANEL_HEIGHT = 1.254f
 
-private val panelHeadingText = "Splat Sample"
-private val panelInstructionText = buildAnnotatedString {
-  append("Press ")
-  withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(" to snap the panel in front of you. \nPress ")
-  withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
-  append(" to recenter the view.")
-}
+private val panelHeadingText = "Splat Viewer"
 
-private val selectedBlue = Color(0xFF1877F2)
+private val panelInstructionText = buildAnnotatedString {
+  append("Drone: ")
+  withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Left stick") }
+  append(" move, ")
+  withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Right stick") }
+  append(" look, ")
+  withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Triggers") }
+  append(" up/down.\nOrbit: click ")
+  withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Right stick") }
+  append(" to toggle.\n")
+  append("A snaps panel in front. B resets view.")
+}
 
 @Composable
 fun ControlPanel(
-    splatList: List<String>,
-    selectedIndex: MutableState<Int>,
-    loadSplatFunction: (String) -> Unit,
-    rescanFunction: () -> Unit,
-    debugLogLines: List<String>,
-    externalFolderPath: String,
+  splatList: List<String>,
+  selectedIndex: MutableState<Int>,
+  loadSplatFunction: (String) -> Unit,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
     Column(
-        modifier =
-            Modifier.fillMaxSize()
-                .clip(SpatialTheme.shapes.large)
-                .background(brush = LocalColorScheme.current.panel)
-                .padding(22.dp),
-        verticalArrangement = Arrangement.Top,
-        horizontalAlignment = Alignment.CenterHorizontally,
+      modifier =
+        Modifier.fillMaxSize()
+          .clip(SpatialTheme.shapes.large)
+          .background(brush = LocalColorScheme.current.panel)
+          .padding(36.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      Text(
+      Column(
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        Text(
           text = panelHeadingText,
           style = SpatialTheme.typography.headline1Strong,
           color = LocalColorScheme.current.primaryAlphaBackground,
-      )
+        )
 
-      Text(
+        Text(
           text = panelInstructionText,
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
           modifier = Modifier.padding(top = 8.dp),
-      )
-
-      Spacer(modifier = Modifier.height(10.dp))
-
-      Text(
-          text = "Device folder: $externalFolderPath",
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-      )
-
-      Spacer(modifier = Modifier.height(12.dp))
-
-      Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-      ) {
-        ActionButton(text = "Rescan", onClick = rescanFunction, modifier = Modifier.weight(1f))
-      }
-
-      Spacer(modifier = Modifier.height(12.dp))
-
-      if (splatList.isEmpty()) {
-        EmptyState()
-      } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          itemsIndexed(splatList) { index, option ->
-            val isSelected = index == selectedIndex.value
-            SplatRowItem(
-                splatPath = option,
-                isSelected = isSelected,
-                onClick = {
-                  loadSplatFunction(option)
-                  selectedIndex.value = index
-                },
-            )
-          }
-        }
-      }
-
-      Spacer(modifier = Modifier.height(10.dp))
-      DebugLogPanel(debugLogLines)
-    }
-  }
-}
-
-@Composable
-private fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-  Box(
-      modifier =
-          modifier
-              .clip(RoundedCornerShape(12.dp))
-              .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.10f))
-              .border(
-                  2.dp,
-                  LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.35f),
-                  RoundedCornerShape(12.dp),
-              )
-              .clickable(onClick = onClick)
-              .padding(vertical = 10.dp, horizontal = 12.dp),
-      contentAlignment = Alignment.Center,
-  ) {
-    Text(
-        text = text,
-        style = SpatialTheme.typography.headline2Strong,
-        color = LocalColorScheme.current.primaryAlphaBackground,
-    )
-  }
-}
-
-@Composable
-private fun EmptyState() {
-  Box(
-      modifier =
-          Modifier.fillMaxWidth()
-              .clip(RoundedCornerShape(14.dp))
-              .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.06f))
-              .padding(14.dp),
-      contentAlignment = Alignment.CenterStart,
-  ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = "No splats found",
-          style = SpatialTheme.typography.headline2Strong,
-          color = LocalColorScheme.current.primaryAlphaBackground,
-      )
-      Text(
-          text = "Push .spz/.ply into the device folder above, then press Rescan.",
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-      )
-    }
-  }
-}
-
-@Composable
-private fun SplatRowItem(
-    splatPath: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-) {
-  val borderWidth = if (isSelected) 4.dp else 2.dp
-  val borderColor = if (isSelected) selectedBlue else LocalColorScheme.current.primaryAlphaBackground
-  val titleColor = if (isSelected) selectedBlue else LocalColorScheme.current.primaryAlphaBackground
-
-  Row(
-      modifier =
-          Modifier.fillMaxWidth()
-              .clip(RoundedCornerShape(14.dp))
-              .border(borderWidth, borderColor, RoundedCornerShape(14.dp))
-              .clickable(onClick = onClick)
-              .padding(10.dp),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
-      verticalAlignment = Alignment.CenterVertically,
-  ) {
-    val previewResource = getSplatPreviewResource(splatPath)
-
-    if (previewResource != null) {
-      Image(
-          painter = painterResource(id = previewResource),
-          contentDescription = "Preview of $splatPath",
-          modifier =
-              Modifier
-                  .height(88.dp)
-                  .fillMaxWidth(0.32f)
-                  .clip(RoundedCornerShape(10.dp)),
-          contentScale = ContentScale.Crop,
-      )
-    } else {
-      PlaceholderPreviewTile(
-          label = getSplatDisplayName(splatPath),
-          isSelected = isSelected,
-          modifier =
-              Modifier
-                  .height(88.dp)
-                  .fillMaxWidth(0.32f)
-                  .clip(RoundedCornerShape(10.dp)),
-      )
-    }
-
-    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = getSplatDisplayName(splatPath),
-          style = SpatialTheme.typography.headline2Strong,
-          color = titleColor,
-      )
-      Text(
-          text = getSplatShortPath(splatPath),
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.65f),
-      )
-    }
-  }
-}
-
-@Composable
-private fun PlaceholderPreviewTile(
-    label: String,
-    isSelected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-  val bg =
-      if (isSelected) selectedBlue.copy(alpha = 0.14f)
-      else LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.08f)
-
-  Box(
-      modifier = modifier.background(bg).padding(10.dp),
-      contentAlignment = Alignment.BottomStart,
-  ) {
-    Text(
-        text = label.take(24),
-        style = SpatialTheme.typography.body1,
-        color = LocalColorScheme.current.primaryAlphaBackground,
-    )
-  }
-}
-
-@Composable
-private fun DebugLogPanel(lines: List<String>) {
-  Box(
-      modifier =
-          Modifier.fillMaxWidth()
-              .clip(RoundedCornerShape(14.dp))
-              .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.06f))
-              .padding(10.dp),
-  ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = "Debug log",
-          style = SpatialTheme.typography.headline2Strong,
-          color = LocalColorScheme.current.primaryAlphaBackground,
-      )
-
-      val show = lines.takeLast(8)
-      if (show.isEmpty()) {
-        Text(
-            text = "(no log lines yet)",
-            style = SpatialTheme.typography.body1,
-            color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.65f),
         )
-      } else {
-        show.forEach { line ->
-          Text(
-              text = line,
-              style = SpatialTheme.typography.body1,
-              color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.75f),
-          )
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
+        ) {
+          splatList.forEachIndexed { index, option ->
+            val isSelected = (index == selectedIndex.value)
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(12.dp),
+              horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+              val previewResource = getSplatPreviewResource(option)
+              if (previewResource != null) {
+                Image(
+                  painter = painterResource(id = previewResource),
+                  contentDescription = "Preview of $option",
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .height(200.dp)
+                      .clip(RoundedCornerShape(12.dp))
+                      .border(
+                        width = if (isSelected) 4.dp else 2.dp,
+                        color = if (isSelected) Color(0xFF1877F2)
+                        else LocalColorScheme.current.primaryAlphaBackground,
+                        shape = RoundedCornerShape(12.dp),
+                      )
+                      .clickable {
+                        loadSplatFunction(option)
+                        selectedIndex.value = index
+                      },
+                  contentScale = ContentScale.Crop,
+                )
+              }
+
+              Text(
+                text = getSplatDisplayName(option),
+                style = SpatialTheme.typography.headline2Strong,
+                color =
+                  if (isSelected) Color(0xFF1877F2)
+                  else LocalColorScheme.current.primaryAlphaBackground,
+              )
+            }
+          }
         }
       }
     }
@@ -305,7 +142,7 @@ private fun DebugLogPanel(lines: List<String>) {
 
 @Composable
 fun getPanelTheme(): SpatialColorScheme =
-    if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
+  if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
 fun getSplatPreviewResource(splatPath: String): Int? {
   return when {
@@ -316,23 +153,5 @@ fun getSplatPreviewResource(splatPath: String): Int? {
 }
 
 fun getSplatDisplayName(splatPath: String): String {
-  val name =
-      splatPath
-          .removePrefix("apk://")
-          .removePrefix("file://")
-          .substringAfterLast("/")
-  return name
-      .removeSuffix(".spz")
-      .removeSuffix(".SPZ")
-      .removeSuffix(".ply")
-      .removeSuffix(".PLY")
-}
-
-fun getSplatShortPath(splatPath: String): String {
-  return when {
-    splatPath.startsWith("apk://") -> "Bundled asset"
-    splatPath.startsWith("file://") -> "Device file"
-    splatPath.startsWith("http://") || splatPath.startsWith("https://") -> "Network URL"
-    else -> "Path"
-  }
+  return splatPath.replace("apk://", "").replace(".spz", "")
 }
