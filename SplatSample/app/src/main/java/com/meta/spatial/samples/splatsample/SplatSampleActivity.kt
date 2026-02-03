@@ -90,12 +90,12 @@ class SplatSampleActivity : AppSystemActivity() {
   private var defaultSplatPath: Uri? = null
 
   // --- CONFIG ---
-  private var configMoveSpeed = 0.2f
+  private var configMoveSpeed = 0.5f // Default speed
   private var configTurnSpeed = 1.5f
   private var configRotationX = 0f 
   private var configScale = 1.0f
 
-  // Menu Distance: 2.0m
+  // Panel Distance
   private val panelOffset = 2.0f 
   
   // Flight State
@@ -139,16 +139,18 @@ class SplatSampleActivity : AppSystemActivity() {
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
-      // [FIX] DISABLE COLLISION to prevent default teleport
+      // [FIX] CRITICAL: Disable collision on the Environment Mesh
+      // This prevents the Teleport Arc from finding a valid target.
       environmentEntity = composition.getNodeByName("Environment").entity
       val environmentMesh = environmentEntity.getComponent<Mesh>()
       environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
       environmentMesh.hittable = MeshCollision.NoCollision 
       environmentEntity.setComponent(environmentMesh)
 
+      // [FIX] CRITICAL: Disable collision on the Floor Mesh
       floorEntity = composition.getNodeByName("Floor").entity
       val floorMesh = floorEntity.getComponent<Mesh>()
-      floorMesh.hittable = MeshCollision.NoCollision 
+      floorMesh.hittable = MeshCollision.NoCollision
       floorEntity.setComponent(floorMesh)
 
       updateViewOrigin()
@@ -237,25 +239,24 @@ class SplatSampleActivity : AppSystemActivity() {
         )
 
     systemManager.registerSystem(ControllerListenerSystem())
-
-    // Removed broken DroneFlightSystem class to prevent build errors
-    // Flight logic moved to dispatchGenericMotionEvent below
-
+    
+    // Auto-center panel after 2 seconds
     activityScope.launch {
         delay(2000)
         recenterPanel()
     }
   }
 
-  // [FIX] Drone Flight Logic using Android Input (Guaranteed to compile)
+  // [FLIGHT LOGIC]
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-      if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+      if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
+          event.action == MotionEvent.ACTION_MOVE) {
         
-        // --- READ INPUTS ---
+        // --- READ RAW INPUTS ---
         val leftX = event.getAxisValue(MotionEvent.AXIS_X)
         val leftY = event.getAxisValue(MotionEvent.AXIS_Y)
         
-        // Handle variations in right stick mapping
+        // Handle right stick variations
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
