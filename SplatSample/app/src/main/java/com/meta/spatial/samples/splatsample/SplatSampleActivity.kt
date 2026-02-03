@@ -91,11 +91,11 @@ class SplatSampleActivity : AppSystemActivity() {
   private var currentRotationX = -90f 
   private var currentScale = 1.0f
 
-  private val panelOffset = 0.8f // Closer for easier reading
+  private val panelOffset = 0.8f 
   
   // Flight State
   private var flightX = 0f
-  private var flightY = 0f // [FIX] Start at floor (0), let physical height handle the rest
+  private var flightY = 0f 
   private var flightZ = 0f 
   private var flightYaw = 0f
 
@@ -123,7 +123,7 @@ class SplatSampleActivity : AppSystemActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     
-    // [FIX] Check for "All Files Access" instead of standard permission
+    // Check permissions
     checkAndRequestPermission()
 
     NetworkedAssetLoader.init(
@@ -178,7 +178,6 @@ class SplatSampleActivity : AppSystemActivity() {
       }
   }
 
-  // Exposed for UI button
   fun requestPermissionFromUI() {
       checkAndRequestPermission()
   }
@@ -220,36 +219,52 @@ class SplatSampleActivity : AppSystemActivity() {
     systemManager.registerSystem(ControllerListenerSystem())
     systemManager.registerSystem(DroneFlightSystem())
 
-    // [FIX] Auto-center panel after 2 seconds to ensure tracking is stable
     activityScope.launch {
         delay(2000)
         recenterPanel()
     }
   }
 
-  override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+  // [FIX] Override dispatchGenericMotionEvent to intercept input BEFORE anything else
+  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+        
+        // Capture Standard Left Stick
         leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
         leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
+        
+        // Capture Right Stick (Check ALL possible mappings)
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
         val rx = event.getAxisValue(MotionEvent.AXIS_RX)
+        
+        // Prioritize the one that is moving
         rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
         rightStickX = if (Math.abs(z) > 0.1f) z else rx
+
+        // Debug output to help verify connection
+        // Only log if sticks are actually moving to avoid spam
+        if (Math.abs(leftStickY) > 0.1f || Math.abs(rightStickY) > 0.1f) {
+           // appendLog("Input: L=${leftStickY} R=${rightStickY}") 
+        }
+
+        // Return true to prevent system from using this for navigation
         return true
     }
-    return super.onGenericMotionEvent(event)
+    return super.dispatchGenericMotionEvent(event)
   }
 
   inner class DroneFlightSystem : SystemBase() {
-      private val moveSpeed = 0.05f
+      // [FIX] Increased speed slightly
+      private val moveSpeed = 0.08f 
       private val turnSpeed = 1.5f
       private val deadzone = 0.1f
 
       override fun execute() {
           var hasInput = false
 
+          // Invert stick Y for "Up"
           val throttle = -leftStickY
           val yawInput = -leftStickX
 
@@ -285,6 +300,8 @@ class SplatSampleActivity : AppSystemActivity() {
 
           if (hasInput) {
               updateViewOrigin()
+              // Log flight coords occasionally
+              // appendLog("Fly: $flightX, $flightY, $flightZ")
           }
       }
   }
@@ -418,8 +435,6 @@ class SplatSampleActivity : AppSystemActivity() {
     val forwardNormalized = forward.normalize()
     
     var newPosition = headPose.t + (forwardNormalized * distance)
-    
-    // [FIX] Use Head Height, not fixed 1.5m
     newPosition.y = headPose.t.y 
     
     val lookRotation = Quaternion.lookRotation(forwardNormalized)
@@ -462,7 +477,7 @@ class SplatSampleActivity : AppSystemActivity() {
               loadSplatFunction = ::loadSplat,
               rescanFunction = ::rescanSplats,
               rotateFunction = ::rotateSplat,
-              requestPermissionFunction = ::requestPermissionFromUI, // [FIX] Added logic
+              requestPermissionFunction = ::requestPermissionFromUI, 
               debugLogLines = debugLogState.value,
           )
         },
@@ -475,7 +490,7 @@ class SplatSampleActivity : AppSystemActivity() {
       glXFManager.inflateGLXF(
           Uri.parse("apk:///scenes/Composition.glxf"),
           rootEntity = gltfxEntity!!,
-          keyName = \"example_key_name\",
+          keyName = "example_key_name",
           onLoaded = onLoaded,
       )
     }
