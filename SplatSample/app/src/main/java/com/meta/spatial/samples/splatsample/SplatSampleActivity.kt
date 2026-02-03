@@ -72,9 +72,10 @@ import kotlinx.coroutines.launch
 @OptIn(SpatialSDKExperimentalSplatAPI::class)
 class SplatSampleActivity : AppSystemActivity() {
 
-  // We no longer use gltfxEntity since we aren't loading the scene file
+  private var gltfxEntity: Entity? = null
   private val activityScope = CoroutineScope(Dispatchers.Main)
 
+  // System Entities
   private lateinit var skyboxEntity: Entity
   private lateinit var panelEntity: Entity
   private lateinit var splatEntity: Entity
@@ -95,7 +96,7 @@ class SplatSampleActivity : AppSystemActivity() {
   private var configScale = 1.0f
 
   // Dynamic Panel Distance
-  private var panelDistance = 2.0f // Start Far
+  private var panelDistance = 2.0f 
   private var isPanelNear = false
   
   // Flight State
@@ -138,8 +139,8 @@ class SplatSampleActivity : AppSystemActivity() {
     selectedIndex.value = 0
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
-    // [NUCLEAR FIX] We do NOT load loadGLXF anymore. 
-    // We manually initialize the "Void" scene in onSceneReady.
+    // [NUCLEAR FIX] We do NOT load loadGLXF anymore.
+    // Instead we build the scene manually in onSceneReady to ensure NO FLOOR exists.
   }
 
   private fun loadExternalConfig() {
@@ -186,11 +187,11 @@ class SplatSampleActivity : AppSystemActivity() {
     super.onSceneReady()
     registerTestingIntentReceivers()
 
-    // 1. SETUP LIGHTING (Since we deleted the GLXF scene that had it)
+    // 1. SETUP LIGHTING (Since we deleted the GLXF scene)
     scene.setLightingEnvironment(
         ambientColor = Vector3(0.1f),
         sunColor = Vector3(1.0f, 1.0f, 1.0f),
-        sunDirection = -Vector3(1.0f, 3.0f, -2.0f), // Standard overhead sun
+        sunDirection = -Vector3(1.0f, 3.0f, -2.0f), 
         environmentIntensity = 0.5f,
     )
     
@@ -242,6 +243,7 @@ class SplatSampleActivity : AppSystemActivity() {
         val leftX = event.getAxisValue(MotionEvent.AXIS_X)
         val leftY = event.getAxisValue(MotionEvent.AXIS_Y)
         
+        // Map Right Stick
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
@@ -327,7 +329,6 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterPanel() {
-      // Toggle between Near (0.6m) and Far (2.0m)
       positionPanelInFrontOfUser(panelDistance)
   }
 
@@ -439,7 +440,7 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun setEnvironmentVisiblity(isVisible: Boolean) {
-    // Stub
+    // skyboxEntity.setComponent(Visible(isVisible))
   }
 
   private fun positionPanelInFrontOfUser(distance: Float) {
@@ -501,6 +502,8 @@ class SplatSampleActivity : AppSystemActivity() {
         },
     )
   }
+
+  // DELETED loadGLXF because we don't want the room!
 
   private fun createSimpleComposePanel(
       panelId: Int,
