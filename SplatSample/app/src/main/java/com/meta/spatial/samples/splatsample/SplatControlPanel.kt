@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -33,7 +34,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import com.meta.spatial.uiset.components.Button
 import com.meta.spatial.uiset.theme.LocalColorScheme
 import com.meta.spatial.uiset.theme.SpatialColorScheme
 import com.meta.spatial.uiset.theme.SpatialTheme
@@ -47,14 +47,14 @@ private val panelHeadingText = "Splat Sample"
 private val panelInstructionText = buildAnnotatedString {
   append("Press ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(" to snap the panel in front of you. \nPress ")
+  append(" to snap the panel in front of you.\nPress ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
   append(" to recenter the view.\n\n")
-  append("External splats live in:\n")
+  append("External splats folder:\n")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
     append("/Android/data/com.meta.spatial.samples.splatsample/files/splats\n")
   }
-  append("Use adb push, then press Rescan.")
+  append("Push via adb, then tap Rescan.")
 }
 
 @Composable
@@ -97,7 +97,7 @@ fun ControlPanel(
         )
       }
 
-      // Splat list (click to load)
+      // List
       Column(
           modifier =
               Modifier.fillMaxWidth()
@@ -164,7 +164,7 @@ fun ControlPanel(
         }
       }
 
-      // Debug log (bounded)
+      // Debug (bounded)
       Column(
           modifier =
               Modifier.fillMaxWidth()
@@ -205,9 +205,6 @@ fun getPanelTheme(): SpatialColorScheme =
     if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
 fun getSplatDisplayName(splatUriString: String): String {
-  // Display name from URI string
-  // - apk://Menlo Park.spz -> Menlo Park
-  // - file:///.../mill1.ply -> mill1
   val s = splatUriString
   val base =
       when {
