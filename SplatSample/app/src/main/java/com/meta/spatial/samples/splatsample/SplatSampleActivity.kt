@@ -59,6 +59,8 @@ import com.meta.spatial.toolkit.Visible
 import com.meta.spatial.toolkit.createPanelEntity
 import com.meta.spatial.vr.VRFeature
 import java.io.File
+import java.io.FileInputStream
+import java.util.Properties
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
@@ -86,11 +88,15 @@ class SplatSampleActivity : AppSystemActivity() {
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
-  private var hasLoggedInput = false // To avoid log spam
+  private var hasLoggedInput = false 
 
-  // Rotation fix for PLY files
-  private var currentRotationX = -90f 
-  private var currentScale = 1.0f
+  // --- CONFIGURABLE VARIABLES (Loaded from config.txt) ---
+  // Default values used if file is missing
+  private var configMoveSpeed = 0.2f
+  private var configTurnSpeed = 1.5f
+  private var configDeadzone = 0.1f
+  private var configRotationX = -90f
+  private var configScale = 1.0f
 
   private val panelOffset = 0.8f 
   
@@ -134,6 +140,9 @@ class SplatSampleActivity : AppSystemActivity() {
     externalSplatsDir = initExternalSplatsDir()
     externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
 
+    // [NEW] Load Config File immediately
+    loadExternalConfig()
+
     rebuildSplatList(reason = "startup")
     selectedIndex.value = 0
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
@@ -157,10 +166,35 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
+  // [NEW] Reads /sdcard/Splats/config.txt
+  private fun loadExternalConfig() {
+      val dir = externalSplatsDir ?: return
+      val configFile = File(dir, "config.txt")
+      
+      if (configFile.exists()) {
+          try {
+              val props = Properties()
+              FileInputStream(configFile).use { props.load(it) }
+              
+              // Parse values safely
+              props.getProperty("moveSpeed")?.toFloatOrNull()?.let { configMoveSpeed = it }
+              props.getProperty("turnSpeed")?.toFloatOrNull()?.let { configTurnSpeed = it }
+              props.getProperty("deadzone")?.toFloatOrNull()?.let { configDeadzone = it }
+              props.getProperty("rotationX")?.toFloatOrNull()?.let { configRotationX = it }
+              props.getProperty("scale")?.toFloatOrNull()?.let { configScale = it }
+
+              appendLog("Config Loaded! Speed=$configMoveSpeed Rot=$configRotationX")
+          } catch (e: Exception) {
+              appendLog("Config Error: ${e.message}")
+          }
+      } else {
+          appendLog("No config.txt found, using defaults.")
+      }
+  }
+
   private fun checkAndRequestPermission() {
       if (Build.VERSION.SDK_INT >= 30) {
           if (!Environment.isExternalStorageManager()) {
-              appendLog("Requesting All Files Access...")
               try {
                   val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
                   intent.addCategory("android.intent.category.DEFAULT")
@@ -228,17 +262,14 @@ class SplatSampleActivity : AppSystemActivity() {
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
         
-        // Capture Standard Left Stick
         leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
         leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
         
-        // Capture Right Stick (Check ALL possible mappings)
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
         val rx = event.getAxisValue(MotionEvent.AXIS_RX)
         
-        // Prioritize the one that is moving
         rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
         rightStickX = if (Math.abs(z) > 0.1f) z else rx
 
@@ -246,39 +277,32 @@ class SplatSampleActivity : AppSystemActivity() {
             hasLoggedInput = true
             appendLog("JOYSTICK DETECTED!")
         }
-
-        // Return true to prevent system from using this for navigation
         return true
     }
     return super.dispatchGenericMotionEvent(event)
   }
 
   inner class DroneFlightSystem : SystemBase() {
-      // [FIX] Increased speed 4x (from 0.05 to 0.2)
-      private val moveSpeed = 0.2f 
-      private val turnSpeed = 1.5f
-      private val deadzone = 0.1f
-
+      // [FIX] Use Config Variables
       override fun execute() {
           var hasInput = false
 
-          // Invert stick Y for "Up"
           val throttle = -leftStickY
           val yawInput = -leftStickX
 
-          if (Math.abs(throttle) > deadzone) {
-              flightY += throttle * moveSpeed
+          if (Math.abs(throttle) > configDeadzone) {
+              flightY += throttle * configMoveSpeed
               hasInput = true
           }
-          if (Math.abs(yawInput) > deadzone) {
-              flightYaw += yawInput * turnSpeed
+          if (Math.abs(yawInput) > configDeadzone) {
+              flightYaw += yawInput * configTurnSpeed
               hasInput = true
           }
 
           val pitch = -rightStickY
           val roll = rightStickX
 
-          if (Math.abs(pitch) > deadzone || Math.abs(roll) > deadzone) {
+          if (Math.abs(pitch) > configDeadzone || Math.abs(roll) > configDeadzone) {
               val rads = Math.toRadians(flightYaw.toDouble())
               val cosY = cos(rads).toFloat()
               val sinY = sin(rads).toFloat()
@@ -291,8 +315,8 @@ class SplatSampleActivity : AppSystemActivity() {
               val dX = (fwdX * pitch) + (rightX * roll)
               val dZ = (fwdZ * pitch) + (rightZ * roll)
 
-              flightX += dX * moveSpeed
-              flightZ += dZ * moveSpeed
+              flightX += dX * configMoveSpeed
+              flightZ += dZ * configMoveSpeed
               hasInput = true
           }
 
@@ -304,19 +328,19 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun rotateSplat() {
       if (!::splatEntity.isInitialized) return
-      currentRotationX += 90f
-      if (currentRotationX >= 360f) currentRotationX = 0f
+      configRotationX += 90f
+      if (configRotationX >= 360f) configRotationX = 0f
       
       updateSplatTransform()
-      appendLog("Rotated to X: $currentRotationX")
+      appendLog("Rotated to X: $configRotationX")
   }
 
   fun updateSplatTransform() {
       if (!::splatEntity.isInitialized) return
-      val q = Quaternion(currentRotationX, 0f, 0f)
+      val q = Quaternion(configRotationX, 0f, 0f)
       
       splatEntity.setComponent(Transform(Pose(Vector3(0f), q)))
-      splatEntity.setComponent(Scale(Vector3(currentScale)))
+      splatEntity.setComponent(Scale(Vector3(configScale)))
   }
 
   fun recenterPanel() {
@@ -325,7 +349,7 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun resetFlight() {
     flightX = 0f
-    flightY = 0f // Reset to floor
+    flightY = 0f 
     flightZ = 0f
     flightYaw = 0f
     updateViewOrigin()
@@ -338,6 +362,9 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun rescanSplats() {
     appendLog("Rescan pressed")
+    // Reload config on rescan too!
+    loadExternalConfig()
+    
     rebuildSplatList("user_rescan")
     val list = splatListState.value
     if (list.isEmpty()) {
@@ -384,13 +411,12 @@ class SplatSampleActivity : AppSystemActivity() {
   private fun initializeSplat(splatPath: Uri) {
     appendLog("init: $splatPath")
     
-    // [FIX] Ensure we create the entity fresh
     splatEntity =
         Entity.create(
             listOf(
                 Splat(splatPath),
                 Transform(Pose(Vector3(0f), Quaternion(0f, 0f, 0f))), 
-                Scale(Vector3(currentScale)),
+                Scale(Vector3(configScale)),
             )
         )
     
@@ -411,15 +437,13 @@ class SplatSampleActivity : AppSystemActivity() {
     appendLog("Loading: ${newSplatPath.substringAfterLast("/")}")
     val uri = newSplatPath.toUri()
     
-    // [FIX] If entity wasn't created (because no permissions on startup), create it now
     if (!::splatEntity.isInitialized) {
         appendLog("Creating new Splat entity...")
         initializeSplat(uri)
     } else {
         splatEntity.setComponent(Splat(uri))
     }
-    
-    setSplatVisibility(false) // Hide until loaded event fires
+    setSplatVisibility(false)
   }
 
   fun setSplatVisibility(isSplatVisible: Boolean) {
