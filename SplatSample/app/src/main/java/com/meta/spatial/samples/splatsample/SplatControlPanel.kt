@@ -41,6 +41,7 @@ import com.meta.spatial.uiset.theme.SpatialTheme
 import com.meta.spatial.uiset.theme.darkSpatialColorScheme
 import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 
+// Panel Instructions
 private val panelHeadingText = "Splat Player"
 private val panelInstructionText = buildAnnotatedString {
   append("Left Stick: Altitude/Yaw | Right Stick: Move\n")
@@ -86,7 +87,7 @@ fun ControlPanel(
 
       Spacer(modifier = Modifier.height(12.dp))
 
-      // BUTTON ROW
+      // --- BUTTONS FOR RESCAN AND ROTATE ---
       Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
@@ -97,6 +98,7 @@ fun ControlPanel(
 
       Spacer(modifier = Modifier.height(12.dp))
 
+      // --- FILE LIST ---
       if (splatList.isEmpty()) {
         EmptyState()
       } else {
@@ -119,6 +121,8 @@ fun ControlPanel(
       }
 
       Spacer(modifier = Modifier.height(10.dp))
+      
+      // --- DEBUG LOG ---
       DebugLogPanel(debugLogLines)
     }
   }
@@ -207,12 +211,12 @@ private fun DebugLogPanel(lines: List<String>) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
       val show = lines.takeLast(4)
       if (show.isEmpty()) {
-        Text(text = "Log...", style = SpatialTheme.typography.caption)
+        Text(text = "Log...", style = SpatialTheme.typography.body1) // [Fixed] body1 instead of caption
       } else {
         show.forEach { line ->
           Text(
               text = line,
-              style = SpatialTheme.typography.caption,
+              style = SpatialTheme.typography.body1, // [Fixed] body1 instead of caption
               color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.75f),
           )
         }
