@@ -92,7 +92,6 @@ fun ControlPanel(
 
       Spacer(modifier = Modifier.height(10.dp))
 
-      // Folder hint (where to adb push)
       Text(
           text = "Device folder: $externalFolderPath",
           style = SpatialTheme.typography.body1,
