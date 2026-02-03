@@ -90,12 +90,11 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private val panelHeight = 1.3f
   private val panelOffset = 1.0f
-  private val defaultZ = 0f // Start at 0 so we aren't "under" if the model is huge
-
+  
   // Flight State
   private var flightX = 0f
-  private var flightY = 1.7f // Start at eye level
-  private var flightZ = 2.0f // Start back a bit
+  private var flightY = 1.7f 
+  private var flightZ = 2.0f 
   private var flightYaw = 0f
 
   // Input State
@@ -194,7 +193,6 @@ class SplatSampleActivity : AppSystemActivity() {
     systemManager.registerSystem(ControllerListenerSystem())
     systemManager.registerSystem(DroneFlightSystem())
 
-    // [FIX] Force panel to snap to user after a brief delay to ensure tracking is live
     activityScope.launch {
         delay(1500)
         recenterPanel()
@@ -202,26 +200,16 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // [FIX] Aggressive Input Handling to stop "Stepping"
   override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-      // Capture ALL joystick events. 
-      // If we don't return true, the system does "Snap Turn" (stepping).
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
-        
-        // Map axes
         leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
         leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
-        
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
         val rx = event.getAxisValue(MotionEvent.AXIS_RX)
-
-        // Try to find the active right stick axis
         rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
         rightStickX = if (Math.abs(z) > 0.1f) z else rx
-
-        // ALWAYS return true if it's a joystick event to consume it.
         return true
     }
     return super.onGenericMotionEvent(event)
@@ -235,8 +223,6 @@ class SplatSampleActivity : AppSystemActivity() {
       override fun execute() {
           var hasInput = false
 
-          // Drone Mode 2
-          // Left Stick: Y=Altitude, X=Yaw
           val throttle = -leftStickY
           val yawInput = -leftStickX
 
@@ -249,7 +235,6 @@ class SplatSampleActivity : AppSystemActivity() {
               hasInput = true
           }
 
-          // Right Stick: Y=Pitch(Fwd/Back), X=Roll(Strafe)
           val pitch = -rightStickY
           val roll = rightStickX
 
@@ -277,7 +262,6 @@ class SplatSampleActivity : AppSystemActivity() {
       }
   }
 
-  // [FIX] Manual rotation toggle
   fun rotateSplat() {
       if (!::splatEntity.isInitialized) return
       currentRotationX += 90f
@@ -289,13 +273,10 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun updateSplatTransform() {
       if (!::splatEntity.isInitialized) return
-      val t = splatEntity.getComponent<Transform>()
+      // [FIX] Use basic constructor for Euler angles (since fromEuler is missing)
+      val q = Quaternion(currentRotationX, 0f, 0f)
       
-      // We keep position 0,0,0. We only rotate X.
-      // Quaternion.eulerAngles is (pitch, yaw, roll) usually
-      val q = Quaternion.fromEuler(Vector3(currentRotationX, 0f, 0f))
-      
-      splatEntity.setComponent(Transform(Pose(Vector3(0f,0f,0f), q)))
+      splatEntity.setComponent(Transform(Pose(Vector3(0f), q)))
       splatEntity.setComponent(Scale(Vector3(currentScale)))
   }
 
@@ -305,7 +286,7 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun resetFlight() {
     flightX = 0f
-    flightY = 1.7f // Eye height
+    flightY = 1.7f 
     flightZ = 2.0f
     flightYaw = 0f
     updateViewOrigin()
@@ -367,12 +348,12 @@ class SplatSampleActivity : AppSystemActivity() {
         Entity.create(
             listOf(
                 Splat(splatPath),
-                Transform(Pose(Vector3.Zero, Quaternion.Identity)), // Will update in updateSplatTransform
+                // [FIX] Vector3(0f) and Quaternion(0f, 0f, 0f) instead of constants
+                Transform(Pose(Vector3(0f), Quaternion(0f, 0f, 0f))), 
                 Scale(Vector3(currentScale)),
             )
         )
     
-    // Apply default rotation
     updateSplatTransform()
 
     splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
@@ -383,7 +364,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private fun onSplatLoaded() {
     setSplatVisibility(true)
-    // Don't reset flight here, just ensure panel is visible
     recenterPanel()
   }
 
@@ -408,16 +388,13 @@ class SplatSampleActivity : AppSystemActivity() {
     val head = headQuery.eval().firstOrNull() ?: return
     val headPose = head.getComponent<Transform>().transform
     
-    // Get head forward vector, flatten Y so panel stays vertical
     val forward = headPose.forward()
     forward.y = 0f
     val forwardNormalized = forward.normalize()
     
-    // Position: Head position + (Forward * distance)
     var newPosition = headPose.t + (forwardNormalized * distance)
-    newPosition.y = panelHeight // Force height
+    newPosition.y = panelHeight
     
-    // Rotation: Look at the forward direction
     val lookRotation = Quaternion.lookRotation(forwardNormalized)
     
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
@@ -457,7 +434,7 @@ class SplatSampleActivity : AppSystemActivity() {
               selectedIndex = selectedIndex,
               loadSplatFunction = ::loadSplat,
               rescanFunction = ::rescanSplats,
-              rotateFunction = ::rotateSplat, // NEW
+              rotateFunction = ::rotateSplat,
               debugLogLines = debugLogState.value,
           )
         },
