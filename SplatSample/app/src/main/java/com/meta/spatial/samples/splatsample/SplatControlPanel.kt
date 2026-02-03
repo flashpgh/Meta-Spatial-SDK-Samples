@@ -7,7 +7,6 @@
 
 package com.meta.spatial.samples.splatsample
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,8 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -95,7 +92,7 @@ fun ControlPanel(
       Spacer(modifier = Modifier.height(10.dp))
 
       Text(
-          text = "Folder: .../files/splats",
+          text = "Folder: .../files/",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -179,7 +176,7 @@ private fun EmptyState() {
           color = LocalColorScheme.current.primaryAlphaBackground,
       )
       Text(
-          text = "Use ADB to push .ply or .spz files into the app's 'files/splats' directory.",
+          text = "Push .ply/.spz files to: /storage/emulated/0/Android/data/com.meta.spatial.samples.splatsample/files/",
           style = SpatialTheme.typography.body1,
           color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
       )
@@ -207,7 +204,6 @@ private fun SplatRowItem(
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalAlignment = Alignment.CenterVertically,
   ) {
-    // Simplified: No hardcoded preview logic
     PlaceholderPreviewTile(
         label = getSplatDisplayName(splatPath),
         isSelected = isSelected,
@@ -294,8 +290,6 @@ private fun DebugLogPanel(lines: List<String>) {
 @Composable
 fun getPanelTheme(): SpatialColorScheme =
     if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
-
-// Removed: getSplatPreviewResource (hardcoded Meta logic)
 
 fun getSplatDisplayName(splatPath: String): String {
   val name =
