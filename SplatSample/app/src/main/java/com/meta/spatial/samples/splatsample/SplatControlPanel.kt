@@ -45,7 +45,7 @@ private val panelHeadingText = "Splat Player"
 private val panelInstructionText = buildAnnotatedString {
   append("Left Stick: Altitude/Yaw | Right Stick: Move\n")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(": Recenter Panel  ")
+  append(": Toggle Distance  ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
   append(": Reset Flight")
 }
@@ -59,7 +59,7 @@ fun ControlPanel(
     loadSplatFunction: (String) -> Unit,
     rescanFunction: () -> Unit,
     rotateFunction: () -> Unit,
-    requestPermissionFunction: () -> Unit, // New callback
+    requestPermissionFunction: () -> Unit,
     debugLogLines: List<String>,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
@@ -92,7 +92,7 @@ fun ControlPanel(
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
       ) {
         ActionButton(text = "Rescan", onClick = rescanFunction, modifier = Modifier.weight(1f))
-        ActionButton(text = "Rotate 90°", onClick = rotateFunction, modifier = Modifier.weight(1f))
+        ActionButton(text = "Rotate 180°", onClick = rotateFunction, modifier = Modifier.weight(1f))
       }
 
       Spacer(modifier = Modifier.height(12.dp))
@@ -165,14 +165,12 @@ private fun EmptyState(requestPermissionFunction: () -> Unit) {
             color = LocalColorScheme.current.primaryAlphaBackground,
         )
         Text(
-            text = "1. Ensure files are in /sdcard/Splats/\n2. Ensure Permissions are granted.",
+            text = "Ensure files are in /sdcard/Splats/",
             style = SpatialTheme.typography.body1,
             color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
         )
-        
-        // [FIX] Button to trigger permission manually
-        Spacer(modifier = Modifier.height(4.dp))
-        ActionButton(text = "Grant All Files Access", onClick = requestPermissionFunction)
+        // Permission Button
+        ActionButton(text = "Grant Storage Permission", onClick = requestPermissionFunction)
     }
   }
 }
