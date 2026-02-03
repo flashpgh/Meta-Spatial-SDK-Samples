@@ -69,22 +69,17 @@ class SplatSampleActivity : AppSystemActivity() {
   private lateinit var skyboxEntity: Entity
   private lateinit var panelEntity: Entity
   private lateinit var floorEntity: Entity
-
-  // Entity that holds the Splat component
   private lateinit var splatEntity: Entity
 
-  // ---- UI state (Compose panel reads these)
-  private val splatListState = mutableStateListOf<String>() // list of URI strings
+  // ---- UI state
+  private val splatListState = mutableStateListOf<String>()
   private val selectedIndexState = mutableStateOf(0)
   private val debugLogState = mutableStateOf(listOf<String>())
 
-  // Bundled splats (assets in APK)
+  // Bundled
   private val bundledSplats: List<String> = listOf("apk://Menlo Park.spz", "apk://Los Angeles.spz")
-
-  // External splats folder (push files here)
   private val splatsSubdirName = "splats"
 
-  // Rotation to align splat coordinates with Spatial SDK
   private val eulerRotation = Vector3(-90f, 0f, 0f)
 
   private val panelHeight = 1.5f
@@ -112,7 +107,6 @@ class SplatSampleActivity : AppSystemActivity() {
         OkHttpAssetFetcher(),
     )
 
-    // Build list once at startup
     rebuildSplatList("startup")
 
     loadGLXF { composition ->
@@ -123,7 +117,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
       floorEntity = composition.getNodeByName("Floor").entity
 
-      // Initialize with first item if present; otherwise fall back to first bundled
       val initial = splatListState.firstOrNull() ?: bundledSplats.first()
       appendLog("initializeSplat: $initial")
       initializeSplat(initial.toUri())
@@ -196,7 +189,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun loadSplat(newSplatPath: String) {
     appendLog("loadSplat: $newSplatPath")
-
     if (splatEntity.hasComponent<Splat>()) {
       val current = splatEntity.getComponent<Splat>().path.toString()
       if (current == newSplatPath) {
@@ -224,9 +216,8 @@ class SplatSampleActivity : AppSystemActivity() {
   fun recenterScene() {
     val current = splatEntity.getComponent<Splat>().path.toString()
     var z = laxZ
-    if (current.contains("Menlo Park", ignoreCase = true)) {
-      z = mpkZ
-    }
+    if (current.contains("Menlo Park", ignoreCase = true)) z = mpkZ
+
     scene.setViewOrigin(0f, 0f, z, 0f)
     panelEntity.setComponent(
         Transform(Pose(Vector3(0f, panelHeight, z - panelOffset), Quaternion(0f, 180f, 0f)))
@@ -253,7 +244,6 @@ class SplatSampleActivity : AppSystemActivity() {
       for (controllerEntity in controllers) {
         val controller = controllerEntity.getComponent<Controller>()
         if (!controller.isActive) continue
-
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
@@ -274,9 +264,7 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // --- External splat scanning (NO REBUILD REQUIRED)
   private fun getExternalSplatsDir(): File {
-    // This maps to: /storage/emulated/0/Android/data/<pkg>/files/splats
     val base = getExternalFilesDir(null)
     return File(base, splatsSubdirName)
   }
@@ -284,49 +272,39 @@ class SplatSampleActivity : AppSystemActivity() {
   private fun listExternalSplats(): List<String> {
     val dir = getExternalSplatsDir()
     if (!dir.exists()) {
-      appendLog("external files: dir missing -> ${dir.absolutePath}")
+      appendLog("external dir missing: ${dir.absolutePath}")
       return emptyList()
     }
 
     val files =
         dir.listFiles { f ->
           val n = f.name.lowercase()
-          // Support both .spz and gaussian-splat .ply
           f.isFile && (n.endsWith(".spz") || n.endsWith(".ply"))
         }?.sortedBy { it.name.lowercase() } ?: emptyList()
 
-    appendLog("external files: ${files.size} file(s) in ${dir.absolutePath}")
+    appendLog("external: ${files.size} file(s) in ${dir.absolutePath}")
     for (f in files) appendLog("  - ${f.name}")
 
-    // Use file:// URIs
     return files.map { it.toUri().toString() }
   }
 
   fun rebuildSplatList(reason: String) {
     appendLog("rebuildSplatList($reason)")
-
     val external = listExternalSplats()
     val all = bundledSplats + external
 
     splatListState.clear()
     splatListState.addAll(all)
 
-    if (selectedIndexState.value >= splatListState.size) {
-      selectedIndexState.value = 0
-    }
-
-    appendLog("rebuildSplatList: bundled=${bundledSplats.size} external=${external.size} total=${all.size}")
+    if (selectedIndexState.value >= splatListState.size) selectedIndexState.value = 0
+    appendLog("list: bundled=${bundledSplats.size} external=${external.size} total=${all.size}")
   }
 
-  // ---- Debug log: bounded, high-signal
   private fun appendLog(msg: String) {
     Log.d("SplatManager", msg)
-
     val now = (System.currentTimeMillis() % 100000).toString().padStart(5, '0')
     val line = "$now | $msg"
-
-    val next = (debugLogState.value + line).takeLast(40)
-    debugLogState.value = next
+    debugLogState.value = (debugLogState.value + line).takeLast(40)
   }
 
   @OptIn(SpatialSDKExperimentalAPI::class)
@@ -343,7 +321,6 @@ class SplatSampleActivity : AppSystemActivity() {
               debugLines = debugLogState,
               onRescan = { rebuildSplatList("user_rescan") },
               onLoadSplat = { uriString ->
-                // Update selection index (best-effort)
                 val idx = splatListState.indexOf(uriString)
                 if (idx >= 0) selectedIndexState.value = idx
                 loadSplat(uriString)
@@ -369,7 +346,7 @@ class SplatSampleActivity : AppSystemActivity() {
       panelId: Int,
       width: Float,
       height: Float,
-      content: @androidx.compose.runtime.Composable () -> Unit,
+      content: @Composable () -> Unit,
   ): ComposeViewPanelRegistration {
     return ComposeViewPanelRegistration(
         panelId,
