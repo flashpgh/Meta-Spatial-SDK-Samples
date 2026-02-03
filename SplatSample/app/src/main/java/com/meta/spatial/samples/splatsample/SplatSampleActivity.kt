@@ -7,10 +7,13 @@
 
 package com.meta.spatial.samples.splatsample
 
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.Settings
 import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
@@ -84,17 +87,16 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private var defaultSplatPath: Uri? = null
 
-  // [FIX] Default rotation -90 to fix "Upside Down" PLY files
+  // Rotation fix for PLY files
   private var currentRotationX = -90f 
   private var currentScale = 1.0f
 
-  private val panelHeight = 1.3f
-  private val panelOffset = 1.0f
+  private val panelOffset = 0.8f // Closer for easier reading
   
   // Flight State
   private var flightX = 0f
-  private var flightY = 1.7f 
-  private var flightZ = 2.0f 
+  private var flightY = 0f // [FIX] Start at floor (0), let physical height handle the rest
+  private var flightZ = 0f 
   private var flightYaw = 0f
 
   // Input State
@@ -121,9 +123,8 @@ class SplatSampleActivity : AppSystemActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     
-    if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-        requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 1001)
-    }
+    // [FIX] Check for "All Files Access" instead of standard permission
+    checkAndRequestPermission()
 
     NetworkedAssetLoader.init(
         File(applicationContext.cacheDir.canonicalPath),
@@ -156,6 +157,32 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
+  private fun checkAndRequestPermission() {
+      if (Build.VERSION.SDK_INT >= 30) {
+          if (!Environment.isExternalStorageManager()) {
+              appendLog("Requesting All Files Access...")
+              try {
+                  val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                  intent.addCategory("android.intent.category.DEFAULT")
+                  intent.data = Uri.parse(String.format("package:%s", applicationContext.packageName))
+                  startActivity(intent)
+              } catch (e: Exception) {
+                  val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                  startActivity(intent)
+              }
+          }
+      } else {
+          if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+              requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 1001)
+          }
+      }
+  }
+
+  // Exposed for UI button
+  fun requestPermissionFromUI() {
+      checkAndRequestPermission()
+  }
+
   @OptIn(SpatialSDKInternalTestingAPI::class)
   override fun onSceneReady() {
     super.onSceneReady()
@@ -186,17 +213,17 @@ class SplatSampleActivity : AppSystemActivity() {
     panelEntity =
         Entity.createPanelEntity(
             R.id.control_panel,
-            Transform(Pose(Vector3(0f, panelHeight, 0f), Quaternion(0f, 180f, 0f))),
-            Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.75f, maxHeight = 2.5f),
+            Transform(Pose(Vector3(0f, 1.5f, 0f), Quaternion(0f, 180f, 0f))),
+            Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.5f, maxHeight = 2.5f),
         )
 
     systemManager.registerSystem(ControllerListenerSystem())
     systemManager.registerSystem(DroneFlightSystem())
 
+    // [FIX] Auto-center panel after 2 seconds to ensure tracking is stable
     activityScope.launch {
-        delay(1500)
+        delay(2000)
         recenterPanel()
-        appendLog("Panel recentered automatically.")
     }
   }
 
@@ -273,7 +300,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun updateSplatTransform() {
       if (!::splatEntity.isInitialized) return
-      // [FIX] Use basic constructor for Euler angles (since fromEuler is missing)
       val q = Quaternion(currentRotationX, 0f, 0f)
       
       splatEntity.setComponent(Transform(Pose(Vector3(0f), q)))
@@ -286,8 +312,8 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun resetFlight() {
     flightX = 0f
-    flightY = 1.7f 
-    flightZ = 2.0f
+    flightY = 0f // Reset to floor
+    flightZ = 0f
     flightYaw = 0f
     updateViewOrigin()
     recenterPanel()
@@ -348,7 +374,6 @@ class SplatSampleActivity : AppSystemActivity() {
         Entity.create(
             listOf(
                 Splat(splatPath),
-                // [FIX] Vector3(0f) and Quaternion(0f, 0f, 0f) instead of constants
                 Transform(Pose(Vector3(0f), Quaternion(0f, 0f, 0f))), 
                 Scale(Vector3(currentScale)),
             )
@@ -393,7 +418,9 @@ class SplatSampleActivity : AppSystemActivity() {
     val forwardNormalized = forward.normalize()
     
     var newPosition = headPose.t + (forwardNormalized * distance)
-    newPosition.y = panelHeight
+    
+    // [FIX] Use Head Height, not fixed 1.5m
+    newPosition.y = headPose.t.y 
     
     val lookRotation = Quaternion.lookRotation(forwardNormalized)
     
@@ -435,6 +462,7 @@ class SplatSampleActivity : AppSystemActivity() {
               loadSplatFunction = ::loadSplat,
               rescanFunction = ::rescanSplats,
               rotateFunction = ::rotateSplat,
+              requestPermissionFunction = ::requestPermissionFromUI, // [FIX] Added logic
               debugLogLines = debugLogState.value,
           )
         },
@@ -447,7 +475,7 @@ class SplatSampleActivity : AppSystemActivity() {
       glXFManager.inflateGLXF(
           Uri.parse("apk:///scenes/Composition.glxf"),
           rootEntity = gltfxEntity!!,
-          keyName = "example_key_name",
+          keyName = \"example_key_name\",
           onLoaded = onLoaded,
       )
     }
