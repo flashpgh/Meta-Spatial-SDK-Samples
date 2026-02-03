@@ -7,12 +7,15 @@
 
 package com.meta.spatial.samples.splatsample
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
+import androidx.documentfile.provider.DocumentFile
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
 import com.meta.spatial.core.Entity
@@ -53,6 +56,7 @@ import com.meta.spatial.toolkit.Visible
 import com.meta.spatial.toolkit.createPanelEntity
 import com.meta.spatial.vr.VRFeature
 import java.io.File
+import java.io.FileOutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -68,29 +72,26 @@ class SplatSampleActivity : AppSystemActivity() {
   private lateinit var skyboxEntity: Entity
   private lateinit var panelEntity: Entity
   private lateinit var floorEntity: Entity
-  // Entity that holds the Splat component for rendering Gaussian Splats
   private lateinit var splatEntity: Entity
 
-  // Dynamic list of splats discovered in assets/ (apk://<filename>)
+  // --- UI state ---
   private val splatListState = mutableStateOf<List<String>>(emptyList())
-  private var selectedIndex = mutableStateOf(0)
+  private val selectedIndex = mutableStateOf(0)
 
-  // Used for the initial load and for distance heuristics (optional)
+  // Zero-trust debug log lines shown in UI panel
+  private val debugLogState = mutableStateOf<List<String>>(emptyList())
+
   private var defaultSplatPath: Uri? = null
 
-  private val delayVisibilityMS = 2000L
+  private val panelHeight = 1.5f
+  private val panelOffset = 2.5f
+  private val defaultZ = 4f
 
   // Rotation applied to the Splat to align it with the scene coordinate system
   // -90 degrees on X axis converts from original Splat coordinate space to Spatial SDK space
   private val eulerRotation = Vector3(-90f, 0f, 0f)
 
-  private val panelHeight = 1.5f
-  private val panelOffset = 2.5f
-
-  // Default camera Z distance
-  private val defaultZ = 4f
-
-  // Optional per-splat Z overrides (keep your existing behavior for those legacy names)
+  // Optional per-splat Z overrides (keep existing behavior for the old sample names)
   private val zOverridesByName: Map<String, Float> =
       mapOf(
           "Menlo Park.spz" to 2.5f,
@@ -101,30 +102,44 @@ class SplatSampleActivity : AppSystemActivity() {
       Query.where { has(AvatarAttachment.id) }
           .filter { isLocal() and by(AvatarAttachment.typeData).isEqualTo("head") }
 
+  // Persistent local splats list (app-private file:// URIs)
+  private val prefs by lazy { getSharedPreferences("splatsample_prefs", Context.MODE_PRIVATE) }
+  private val PREF_LOCAL_SPLATS = "local_splats_file_uris"
+
+  // File picker for local splats
+  private val openLocalSplatPicker =
+      registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) {
+          appendLog("Pick local splat: cancelled")
+          return@registerForActivityResult
+        }
+        activityScope.launch {
+          onPickedLocalSplat(uri)
+        }
+      }
+
   // Register all features your app needs. Features add capabilities to the Spatial SDK.
   override fun registerFeatures(): List<SpatialFeature> {
     return listOf(
-        VRFeature(this), // Enable VR rendering
-        // SplatFeature: REQUIRED for rendering Gaussian Splats
-        // This feature handles loading, decoding, and rendering .spz Splat files
-        // Must be registered before creating any entities with Splat components
+        VRFeature(this),
         SplatFeature(this.spatialContext, systemManager),
-        ComposeFeature(), // Enable Compose UI panels
+        ComposeFeature(),
     )
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    // Build the dynamic list FIRST so we can load the first entry.
-    splatListState.value = discoverBundledSplats()
-    selectedIndex.value = 0
-    defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
-
+    appendLog("onCreate: starting")
     NetworkedAssetLoader.init(
-        File(applicationContext.getCacheDir().canonicalPath),
+        File(applicationContext.cacheDir.canonicalPath),
         OkHttpAssetFetcher(),
     )
+
+    // Build list before scene inflates
+    rebuildSplatList(reason = "startup")
+    selectedIndex.value = 0
+    defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
       environmentEntity = composition.getNodeByName("Environment").entity
@@ -134,15 +149,13 @@ class SplatSampleActivity : AppSystemActivity() {
 
       floorEntity = composition.getNodeByName("Floor").entity
 
-      // Initialize the splat entity even if the list is empty (so the app doesn't crash)
       val initial = defaultSplatPath
       if (initial != null) {
+        appendLog("initial splat: $initial")
         initializeSplat(initial)
-        // Make the Splat visible in the scene
         setSplatVisibility(true)
       } else {
-        Log.e("SplatManager", "No .spz/.ply files found in assets/. Add splats to app/src/main/assets/")
-        // Still show environment so the app is usable
+        appendLog("No splats found in assets/ or local list. Add files or use Load from device.")
         setEnvironmentVisiblity(true)
       }
     }
@@ -186,31 +199,129 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   /**
-   * Returns a list of bundled splat paths (apk://...) by scanning app/src/main/assets/.
-   * Includes *.spz and *.ply only.
+   * Build the full list shown in the UI:
+   * - Bundled assets: apk://*.spz/*.ply
+   * - Local picks (persisted): file://... (app-private)
    */
+  private fun rebuildSplatList(reason: String) {
+    val bundled = discoverBundledSplats()
+    val local = loadPersistedLocalSplats().filter { it.startsWith("file://") }
+    val combined = (bundled + local).distinct()
+
+    splatListState.value = combined
+
+    appendLog(
+        "rebuildSplatList($reason): bundled=${bundled.size}, local=${local.size}, total=${combined.size}"
+    )
+
+    if (combined.isEmpty()) {
+      appendLog("No splats available yet.")
+    } else {
+      appendLog("First entry: ${combined.first()}")
+    }
+  }
+
   private fun discoverBundledSplats(): List<String> {
     return try {
       val names = applicationContext.assets.list("")?.toList().orEmpty()
-      names
-          .filter { it.endsWith(".spz", ignoreCase = true) || it.endsWith(".ply", ignoreCase = true) }
-          .sortedWith(String.CASE_INSENSITIVE_ORDER)
-          .map { "apk://$it" }
+      val out =
+          names
+              .filter { it.endsWith(".spz", true) || it.endsWith(".ply", true) }
+              .sortedWith(String.CASE_INSENSITIVE_ORDER)
+              .map { "apk://$it" }
+
+      appendLog("discoverBundledSplats: found=${out.size}")
+      out
     } catch (t: Throwable) {
+      appendLog("discoverBundledSplats: ERROR: ${t.message}")
       Log.e("SplatManager", "Failed to enumerate assets", t)
       emptyList()
     }
   }
 
-  /**
-   * Creates an entity with a Splat component.
-   *
-   * Splat files (.ply or .spz) can be loaded from:
-   * - Application assets: "apk://filename.spz"
-   * - Network URLs: "https://example.com/splat.spz"
-   * - Local files: "file:///path/to/splat.spz"
-   */
+  /** UI action: open a file picker to select a splat from headset storage. */
+  fun pickLocalSplatFromDevice() {
+    appendLog("pickLocalSplatFromDevice: launching file picker")
+    // Keep it permissive; we validate extension ourselves.
+    openLocalSplatPicker.launch(arrayOf("*/*"))
+  }
+
+  private suspend fun onPickedLocalSplat(uri: Uri) {
+    appendLog("Picked URI: $uri")
+
+    val doc = DocumentFile.fromSingleUri(this, uri)
+    val name = doc?.name ?: "picked_splat"
+    appendLog("Picked name: $name")
+
+    val lower = name.lowercase()
+    if (!(lower.endsWith(".spz") || lower.endsWith(".ply"))) {
+      appendLog("Rejected: not .spz/.ply ($name)")
+      return
+    }
+
+    // Copy into app-private storage so we can always load it via file://
+    val destDir = File(filesDir, "splats")
+    destDir.mkdirs()
+
+    val safeName = name.replace(Regex("""[^\w\s\.\-\(\)]"""), "_")
+    val destFile = File(destDir, safeName)
+
+    appendLog("Copying to: ${destFile.absolutePath}")
+
+    try {
+      contentResolver.openInputStream(uri).use { input ->
+        if (input == null) {
+          appendLog("ERROR: openInputStream returned null for $uri")
+          return
+        }
+        FileOutputStream(destFile).use { output ->
+          input.copyTo(output)
+        }
+      }
+    } catch (t: Throwable) {
+      appendLog("ERROR copying file: ${t.message}")
+      Log.e("SplatManager", "Copy failed", t)
+      return
+    }
+
+    val fileUri = destFile.toUri().toString()
+    appendLog("Copied OK. Local file URI: $fileUri")
+
+    persistLocalSplat(fileUri)
+    rebuildSplatList(reason = "picked_local")
+
+    // Select and load immediately
+    val idx = splatListState.value.indexOf(fileUri)
+    if (idx >= 0) selectedIndex.value = idx
+
+    loadSplat(fileUri)
+  }
+
+  private fun loadPersistedLocalSplats(): List<String> {
+    val set = prefs.getStringSet(PREF_LOCAL_SPLATS, emptySet()) ?: emptySet()
+    return set.toList().sortedWith(String.CASE_INSENSITIVE_ORDER).also {
+      appendLog("loadPersistedLocalSplats: ${it.size}")
+    }
+  }
+
+  private fun persistLocalSplat(fileUri: String) {
+    val existing = prefs.getStringSet(PREF_LOCAL_SPLATS, emptySet())?.toMutableSet() ?: mutableSetOf()
+    existing.add(fileUri)
+    prefs.edit().putStringSet(PREF_LOCAL_SPLATS, existing).apply()
+    appendLog("persistLocalSplat: added=$fileUri total=${existing.size}")
+  }
+
+  private fun appendLog(msg: String) {
+    Log.d("SplatManager", msg)
+    val now = System.currentTimeMillis() % 100000
+    val line = "${now}ms | $msg"
+    val current = debugLogState.value
+    // Keep last 80 lines
+    debugLogState.value = (current + line).takeLast(80)
+  }
+
   private fun initializeSplat(splatPath: Uri) {
+    appendLog("initializeSplat: $splatPath")
     splatEntity =
         Entity.create(
             listOf(
@@ -227,7 +338,7 @@ class SplatSampleActivity : AppSystemActivity() {
         )
 
     splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
-      Log.d("SplatManager", "Splat loaded EVENT!")
+      appendLog("Splat loaded EVENT")
       onSplatLoaded()
     }
   }
@@ -237,26 +348,21 @@ class SplatSampleActivity : AppSystemActivity() {
     setSplatVisibility(true)
   }
 
-  /**
-   * Loads a new Splat asset into the scene.
-   *
-   * @param newSplatPath Path to the .spz/.ply file
-   */
+  /** Load a new splat path (apk://, file://, https://). */
   fun loadSplat(newSplatPath: String) {
-    // Guard: if list is empty or not initialized, do nothing
+    appendLog("loadSplat: $newSplatPath")
+
     if (!::splatEntity.isInitialized) {
-      Log.w("SplatManager", "Splat entity not initialized yet; ignoring loadSplat($newSplatPath)")
+      appendLog("WARNING: splatEntity not initialized yet; ignoring loadSplat")
       return
     }
 
     if (splatEntity.hasComponent<Splat>()) {
       val splatComponent = splatEntity.getComponent<Splat>()
       if (splatComponent.path.toString() == newSplatPath) {
-        // Already showing this splat; do nothing
+        appendLog("loadSplat: already showing; no-op")
         return
       }
-
-      // Swap splat, hide until load completes
       splatEntity.setComponent(Splat(newSplatPath.toUri()))
       setSplatVisibility(false)
       recenterScene()
@@ -267,9 +373,6 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  /**
-   * Controls the visibility of the Splat in the scene.
-   */
   fun setSplatVisibility(isSplatVisible: Boolean) {
     if (!::splatEntity.isInitialized) return
     splatEntity.setComponent(Visible(isSplatVisible))
@@ -282,14 +385,15 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterScene() {
-    val current = if (::splatEntity.isInitialized && splatEntity.hasComponent<Splat>()) {
-      splatEntity.getComponent<Splat>().path.toString()
-    } else {
-      defaultSplatPath?.toString()
-    }
+    val currentPath =
+        if (::splatEntity.isInitialized && splatEntity.hasComponent<Splat>())
+            splatEntity.getComponent<Splat>().path.toString()
+        else defaultSplatPath?.toString()
 
-    val filename = current?.removePrefix("apk://") ?: ""
+    val filename = currentPath?.substringAfterLast("/")?.removePrefix("apk://") ?: ""
     val z = zOverridesByName[filename] ?: defaultZ
+
+    appendLog("recenterScene: path=$currentPath z=$z")
 
     scene.setViewOrigin(0f, 0f, z, 0f)
     panelEntity.setComponent(
@@ -297,9 +401,6 @@ class SplatSampleActivity : AppSystemActivity() {
     )
   }
 
-  /**
-   * Positions the panel in front of the user's head.
-   */
   private fun positionPanelInFrontOfUser(distance: Float) {
     val head = headQuery.eval().firstOrNull() ?: return
     val headPose = head.getComponent<Transform>().transform
@@ -312,9 +413,6 @@ class SplatSampleActivity : AppSystemActivity() {
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
   }
 
-  /**
-   * System that listens for controller button presses and performs actions.
-   */
   inner class ControllerListenerSystem : SystemBase() {
     override fun execute() {
       val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
@@ -344,15 +442,21 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   @OptIn(SpatialSDKExperimentalAPI::class)
-  override fun registerPanels(): List<com.meta.spatial.toolkit.PanelRegistration> {
+  override fun registerPanels(): List<PanelRegistration> {
     return listOf(
         createSimpleComposePanel(
             R.id.control_panel,
             ANIMATION_PANEL_WIDTH,
             ANIMATION_PANEL_HEIGHT,
         ) {
-          // Now uses the dynamic splat list from assets/
-          ControlPanel(splatListState.value, selectedIndex, ::loadSplat)
+          ControlPanel(
+              splatList = splatListState.value,
+              selectedIndex = selectedIndex,
+              loadSplatFunction = ::loadSplat,
+              pickLocalSplatFunction = ::pickLocalSplatFromDevice,
+              debugLogLines = debugLogState.value,
+              rescanBundledFunction = { rebuildSplatList("manual_rescan") },
+          )
         },
     )
   }
