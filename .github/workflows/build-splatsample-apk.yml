@@ -1,0 +1,48 @@
+name: Build SplatSample APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+          yes | sdkmanager --licenses
+
+      - name: Build (SplatSample)
+        working-directory: SplatSample
+        run: |
+          chmod +x ./gradlew
+
+          # Try common variants; tolerate missing tasks across versions
+          ./gradlew --no-daemon assembleDebug || true
+          ./gradlew --no-daemon assembleQuestDebug || true
+          ./gradlew --no-daemon assemble || true
+
+          echo "APK outputs found:"
+          find . -path "*outputs/apk*" -name "*.apk" -print
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: SplatSample-APKs
+          path: |
+            SplatSample/**/outputs/apk/**/*.apk
