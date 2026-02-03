@@ -86,6 +86,7 @@ class SplatSampleActivity : AppSystemActivity() {
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
+  private var hasLoggedInput = false // To avoid log spam
 
   // Rotation fix for PLY files
   private var currentRotationX = -90f 
@@ -123,7 +124,6 @@ class SplatSampleActivity : AppSystemActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     
-    // Check permissions
     checkAndRequestPermission()
 
     NetworkedAssetLoader.init(
@@ -225,7 +225,6 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // [FIX] Override dispatchGenericMotionEvent to intercept input BEFORE anything else
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
         
@@ -243,10 +242,9 @@ class SplatSampleActivity : AppSystemActivity() {
         rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
         rightStickX = if (Math.abs(z) > 0.1f) z else rx
 
-        // Debug output to help verify connection
-        // Only log if sticks are actually moving to avoid spam
-        if (Math.abs(leftStickY) > 0.1f || Math.abs(rightStickY) > 0.1f) {
-           // appendLog("Input: L=${leftStickY} R=${rightStickY}") 
+        if (!hasLoggedInput && (Math.abs(leftStickY) > 0.1f || Math.abs(rightStickX) > 0.1f)) {
+            hasLoggedInput = true
+            appendLog("JOYSTICK DETECTED!")
         }
 
         // Return true to prevent system from using this for navigation
@@ -256,8 +254,8 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   inner class DroneFlightSystem : SystemBase() {
-      // [FIX] Increased speed slightly
-      private val moveSpeed = 0.08f 
+      // [FIX] Increased speed 4x (from 0.05 to 0.2)
+      private val moveSpeed = 0.2f 
       private val turnSpeed = 1.5f
       private val deadzone = 0.1f
 
@@ -300,8 +298,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
           if (hasInput) {
               updateViewOrigin()
-              // Log flight coords occasionally
-              // appendLog("Fly: $flightX, $flightY, $flightZ")
           }
       }
   }
@@ -387,6 +383,8 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private fun initializeSplat(splatPath: Uri) {
     appendLog("init: $splatPath")
+    
+    // [FIX] Ensure we create the entity fresh
     splatEntity =
         Entity.create(
             listOf(
@@ -410,9 +408,18 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun loadSplat(newSplatPath: String) {
-    if (!::splatEntity.isInitialized) return
-    splatEntity.setComponent(Splat(newSplatPath.toUri()))
-    setSplatVisibility(false)
+    appendLog("Loading: ${newSplatPath.substringAfterLast("/")}")
+    val uri = newSplatPath.toUri()
+    
+    // [FIX] If entity wasn't created (because no permissions on startup), create it now
+    if (!::splatEntity.isInitialized) {
+        appendLog("Creating new Splat entity...")
+        initializeSplat(uri)
+    } else {
+        splatEntity.setComponent(Splat(uri))
+    }
+    
+    setSplatVisibility(false) // Hide until loaded event fires
   }
 
   fun setSplatVisibility(isSplatVisible: Boolean) {
