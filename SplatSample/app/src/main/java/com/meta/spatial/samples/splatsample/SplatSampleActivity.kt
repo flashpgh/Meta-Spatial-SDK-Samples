@@ -46,13 +46,14 @@ import com.meta.spatial.toolkit.PanelRegistration
 import com.meta.spatial.toolkit.PanelStyleOptions
 import com.meta.spatial.toolkit.QuadShapeOptions
 import com.meta.spatial.toolkit.Scale
-import com.meta.spatial.toolkit.SupportsLocomotion
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.toolkit.Visible
 import com.meta.spatial.toolkit.createPanelEntity
 import com.meta.spatial.vr.VRFeature
 import java.io.File
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,12 +83,18 @@ class SplatSampleActivity : AppSystemActivity() {
 
   private var defaultSplatPath: Uri? = null
 
-  // Rotation applied to the Splat to align it with the scene coordinate system
-  private val eulerRotation = Vector3(-90f, 0f, 0f)
+  // [Adjusted] Zero rotation to align standard PLY meshes correctly
+  private val eulerRotation = Vector3(0f, 0f, 0f)
 
   private val panelHeight = 1.5f
   private val panelOffset = 2.5f
   private val defaultZ = 4f
+
+  // Flight State variables
+  private var flightX = 0f
+  private var flightY = 0f
+  private var flightZ = defaultZ
+  private var flightYaw = 0f
 
   // Optional per-splat Z overrides for the legacy sample names
   private val zOverridesByName: Map<String, Float> =
@@ -96,8 +103,7 @@ class SplatSampleActivity : AppSystemActivity() {
           "Los Angeles.spz" to 4f,
       )
 
-  // App-owned folder on headset storage: no special permissions needed
-  private val splatsFolderName = "splats"
+  // [Adjusted] Use root files dir, no subfolder needed
   private var externalSplatsDir: File? = null
 
   private val headQuery =
@@ -122,7 +128,7 @@ class SplatSampleActivity : AppSystemActivity() {
         OkHttpAssetFetcher(),
     )
 
-    // Compute external folder ONCE (no Compose spam)
+    // Compute external folder ONCE
     externalSplatsDir = initExternalSplatsDir()
     externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
     appendLog("external folder: ${externalFolderPathState.value}")
@@ -165,7 +171,10 @@ class SplatSampleActivity : AppSystemActivity() {
     )
 
     scene.updateIBLEnvironment("environment.env")
-    scene.setViewOrigin(0.0f, 0.0f, defaultZ, 90.0f)
+    
+    // Initialize flight position
+    flightZ = defaultZ
+    updateViewOrigin()
 
     skyboxEntity =
         Entity.create(
@@ -186,7 +195,9 @@ class SplatSampleActivity : AppSystemActivity() {
             Grabbable(type = GrabbableType.PIVOT_Y, minHeight = 0.75f, maxHeight = 2.5f),
         )
 
+    // Register our systems
     systemManager.registerSystem(ControllerListenerSystem())
+    systemManager.registerSystem(DroneFlightSystem())
   }
 
   /** Called by UI panel */
@@ -241,9 +252,8 @@ class SplatSampleActivity : AppSystemActivity() {
   private fun initExternalSplatsDir(): File? {
     val base = getExternalFilesDir(null)
     if (base == null) return null
-    val dir = File(base, splatsFolderName)
-    if (!dir.exists()) dir.mkdirs()
-    return dir
+    // [Adjusted] Using root files dir to align with adb scripts
+    return base
   }
 
   private fun discoverExternalSplats(): List<String> {
@@ -277,7 +287,7 @@ class SplatSampleActivity : AppSystemActivity() {
                     )
                 ),
                 Scale(Vector3(1f)),
-                SupportsLocomotion(),
+                // [Adjusted] Removed SupportsLocomotion() to allow free flight
             )
         )
 
@@ -334,13 +344,23 @@ class SplatSampleActivity : AppSystemActivity() {
         else defaultSplatPath?.toString()
 
     val filename = currentPath?.substringAfterLast("/") ?: ""
-    val z = zOverridesByName[filename] ?: defaultZ
+    val targetZ = zOverridesByName[filename] ?: defaultZ
 
-    appendLog("recenterScene: filename=$filename z=$z")
-    scene.setViewOrigin(0f, 0f, z, 0f)
+    flightX = 0f
+    flightY = 0f
+    flightZ = targetZ
+    flightYaw = 0f
+    
+    appendLog("recenterScene: filename=$filename z=$targetZ")
+    updateViewOrigin()
+    
     panelEntity.setComponent(
-        Transform(Pose(Vector3(0f, panelHeight, z - panelOffset), Quaternion(0f, 180f, 0f)))
+        Transform(Pose(Vector3(0f, panelHeight, flightZ - panelOffset), Quaternion(0f, 180f, 0f)))
     )
+  }
+  
+  private fun updateViewOrigin() {
+      scene.setViewOrigin(flightX, flightY, flightZ, flightYaw)
   }
 
   private fun positionPanelInFrontOfUser(distance: Float) {
@@ -353,6 +373,74 @@ class SplatSampleActivity : AppSystemActivity() {
     newPosition.y = panelHeight
     val lookRotation = Quaternion.lookRotation(forwardNormalized)
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
+  }
+
+  // [New System] Drone Flight Logic (Mode 2)
+  inner class DroneFlightSystem : SystemBase() {
+      // Speed settings
+      private val moveSpeed = 0.05f 
+      private val turnSpeed = 1.5f 
+      private val deadzone = 0.1f
+
+      override fun execute() {
+          val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
+          
+          var hasInput = false
+          
+          for (controllerEntity in controllers) {
+              val controller = controllerEntity.getComponent<Controller>()
+              if (!controller.isActive) continue
+              
+              val attachment = controllerEntity.tryGetComponent<AvatarAttachment>() ?: continue
+              
+              if (attachment.type == "left_controller") {
+                  // Left Stick: Throttle (Up/Down) & Yaw (Rotate)
+                  val throttle = -controller.thumbstickY // Up is usually -Y in thumbsticks, check per device
+                  val yawInput = -controller.thumbstickX
+                  
+                  if (Math.abs(throttle) > deadzone) {
+                      flightY += throttle * moveSpeed
+                      hasInput = true
+                  }
+                  if (Math.abs(yawInput) > deadzone) {
+                      flightYaw += yawInput * turnSpeed
+                      hasInput = true
+                  }
+              }
+              
+              if (attachment.type == "right_controller") {
+                  // Right Stick: Pitch (Forward/Back) & Roll (Strafe)
+                  val pitch = -controller.thumbstickY 
+                  val roll = controller.thumbstickX
+                  
+                  if (Math.abs(pitch) > deadzone || Math.abs(roll) > deadzone) {
+                      // Calculate forward/right vectors based on current Yaw
+                      val rads = Math.toRadians(flightYaw.toDouble())
+                      val cosY = cos(rads).toFloat()
+                      val sinY = sin(rads).toFloat()
+                      
+                      // Forward vector
+                      val fwdX = sinY
+                      val fwdZ = -cosY
+                      
+                      // Right vector
+                      val rightX = cosY
+                      val rightZ = sinY
+                      
+                      val dX = (fwdX * pitch) + (rightX * roll)
+                      val dZ = (fwdZ * pitch) + (rightZ * roll)
+                      
+                      flightX += dX * moveSpeed
+                      flightZ += dZ * moveSpeed
+                      hasInput = true
+                  }
+              }
+          }
+          
+          if (hasInput) {
+              updateViewOrigin()
+          }
+      }
   }
 
   inner class ControllerListenerSystem : SystemBase() {
