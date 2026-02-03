@@ -15,8 +15,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
-import android.view.InputDevice
-import android.view.MotionEvent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
@@ -88,29 +86,21 @@ class SplatSampleActivity : AppSystemActivity() {
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
-  private var hasLoggedInput = false 
 
-  // --- CONFIGURABLE VARIABLES (Loaded from config.txt) ---
-  // Default values used if file is missing
+  // --- CONFIG ---
   private var configMoveSpeed = 0.2f
   private var configTurnSpeed = 1.5f
-  private var configDeadzone = 0.1f
-  private var configRotationX = -90f
+  private var configRotationX = 0f 
   private var configScale = 1.0f
 
-  private val panelOffset = 0.8f 
+  // [FIX] Pushed menu back to 2.5m
+  private val panelOffset = 2.5f 
   
   // Flight State
   private var flightX = 0f
   private var flightY = 0f 
   private var flightZ = 0f 
   private var flightYaw = 0f
-
-  // Input State
-  private var leftStickX = 0f
-  private var leftStickY = 0f
-  private var rightStickX = 0f
-  private var rightStickY = 0f
 
   private val splatsPublicFolder = "Splats"
   private var externalSplatsDir: File? = null
@@ -140,7 +130,6 @@ class SplatSampleActivity : AppSystemActivity() {
     externalSplatsDir = initExternalSplatsDir()
     externalFolderPathState.value = externalSplatsDir?.absolutePath ?: "(unavailable)"
 
-    // [NEW] Load Config File immediately
     loadExternalConfig()
 
     rebuildSplatList(reason = "startup")
@@ -148,12 +137,19 @@ class SplatSampleActivity : AppSystemActivity() {
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
+      // [FIX] DISABLE COLLISION ON ENVIRONMENT so teleport arc fails
       environmentEntity = composition.getNodeByName("Environment").entity
       val environmentMesh = environmentEntity.getComponent<Mesh>()
       environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
+      environmentMesh.hittable = MeshCollision.NoCollision // Disable Teleport Surface
       environmentEntity.setComponent(environmentMesh)
 
+      // [FIX] DISABLE COLLISION ON FLOOR so teleport arc fails
       floorEntity = composition.getNodeByName("Floor").entity
+      val floorMesh = floorEntity.getComponent<Mesh>()
+      floorMesh.hittable = MeshCollision.NoCollision // Disable Teleport Surface
+      floorEntity.setComponent(floorMesh)
+
       updateViewOrigin()
 
       val initial = defaultSplatPath
@@ -166,29 +162,18 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // [NEW] Reads /sdcard/Splats/config.txt
   private fun loadExternalConfig() {
       val dir = externalSplatsDir ?: return
       val configFile = File(dir, "config.txt")
-      
       if (configFile.exists()) {
           try {
               val props = Properties()
               FileInputStream(configFile).use { props.load(it) }
-              
-              // Parse values safely
               props.getProperty("moveSpeed")?.toFloatOrNull()?.let { configMoveSpeed = it }
-              props.getProperty("turnSpeed")?.toFloatOrNull()?.let { configTurnSpeed = it }
-              props.getProperty("deadzone")?.toFloatOrNull()?.let { configDeadzone = it }
               props.getProperty("rotationX")?.toFloatOrNull()?.let { configRotationX = it }
               props.getProperty("scale")?.toFloatOrNull()?.let { configScale = it }
-
-              appendLog("Config Loaded! Speed=$configMoveSpeed Rot=$configRotationX")
-          } catch (e: Exception) {
-              appendLog("Config Error: ${e.message}")
-          }
-      } else {
-          appendLog("No config.txt found, using defaults.")
+              appendLog("Config: Speed=$configMoveSpeed Rot=$configRotationX")
+          } catch (e: Exception) {}
       }
   }
 
@@ -259,65 +244,72 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-      if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
-        
-        leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
-        leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
-        
-        val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
-        val ry = event.getAxisValue(MotionEvent.AXIS_RY)
-        val z = event.getAxisValue(MotionEvent.AXIS_Z)
-        val rx = event.getAxisValue(MotionEvent.AXIS_RX)
-        
-        rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
-        rightStickX = if (Math.abs(z) > 0.1f) z else rx
-
-        if (!hasLoggedInput && (Math.abs(leftStickY) > 0.1f || Math.abs(rightStickX) > 0.1f)) {
-            hasLoggedInput = true
-            appendLog("JOYSTICK DETECTED!")
-        }
-        return true
-    }
-    return super.dispatchGenericMotionEvent(event)
-  }
-
+  // [FIX] Using Native Spatial SDK Controller Input System
+  // This bypasses the Android Input Manager which was getting blocked by default Teleport
   inner class DroneFlightSystem : SystemBase() {
-      // [FIX] Use Config Variables
+      private val deadzone = 0.1f
+      private val rotSpeed = 2.0f
+
       override fun execute() {
+          // Query for local controllers
+          val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
+          
           var hasInput = false
+          
+          for (controllerEntity in controllers) {
+              val controller = controllerEntity.getComponent<Controller>()
+              val attachment = controllerEntity.tryGetComponent<AvatarAttachment>() ?: continue
 
-          val throttle = -leftStickY
-          val yawInput = -leftStickX
+              // --- LEFT STICK: Altitude (Y) & Yaw (X) ---
+              if (attachment.type == "left_controller") {
+                  val throttle = controller.thumbstickY
+                  val yawInput = -controller.thumbstickX 
 
-          if (Math.abs(throttle) > configDeadzone) {
-              flightY += throttle * configMoveSpeed
-              hasInput = true
-          }
-          if (Math.abs(yawInput) > configDeadzone) {
-              flightYaw += yawInput * configTurnSpeed
-              hasInput = true
-          }
+                  if (Math.abs(throttle) > deadzone) {
+                      flightY += throttle * configMoveSpeed
+                      hasInput = true
+                  }
+                  if (Math.abs(yawInput) > deadzone) {
+                      flightYaw += yawInput * configTurnSpeed
+                      hasInput = true
+                  }
+              }
 
-          val pitch = -rightStickY
-          val roll = rightStickX
+              // --- RIGHT STICK: Pitch/Roll + Trigger Modifier ---
+              if (attachment.type == "right_controller") {
+                  val stickY = controller.thumbstickY
+                  val stickX = controller.thumbstickX
+                  val trigger = controller.trigger
 
-          if (Math.abs(pitch) > configDeadzone || Math.abs(roll) > configDeadzone) {
-              val rads = Math.toRadians(flightYaw.toDouble())
-              val cosY = cos(rads).toFloat()
-              val sinY = sin(rads).toFloat()
+                  // Modifier: Hold Trigger to Rotate World
+                  if (trigger > 0.5f) {
+                       if (Math.abs(stickY) > deadzone) {
+                          configRotationX += stickY * rotSpeed
+                          updateSplatTransform()
+                       }
+                  } 
+                  // Normal: Move Drone
+                  else {
+                      if (Math.abs(stickY) > deadzone || Math.abs(stickX) > deadzone) {
+                          val rads = Math.toRadians(flightYaw.toDouble())
+                          val cosY = cos(rads).toFloat()
+                          val sinY = sin(rads).toFloat()
 
-              val fwdX = sinY
-              val fwdZ = -cosY
-              val rightX = cosY
-              val rightZ = sinY
+                          val fwdX = sinY
+                          val fwdZ = -cosY
+                          val rightX = cosY
+                          val rightZ = sinY
 
-              val dX = (fwdX * pitch) + (rightX * roll)
-              val dZ = (fwdZ * pitch) + (rightZ * roll)
+                          // Forward is +Y on stick
+                          val dX = (fwdX * stickY) + (rightX * stickX)
+                          val dZ = (fwdZ * stickY) + (rightZ * stickX)
 
-              flightX += dX * configMoveSpeed
-              flightZ += dZ * configMoveSpeed
-              hasInput = true
+                          flightX += dX * configMoveSpeed
+                          flightZ += dZ * configMoveSpeed
+                          hasInput = true
+                      }
+                  }
+              }
           }
 
           if (hasInput) {
@@ -329,14 +321,13 @@ class SplatSampleActivity : AppSystemActivity() {
   fun rotateSplat() {
       if (!::splatEntity.isInitialized) return
       configRotationX += 90f
-      if (configRotationX >= 360f) configRotationX = 0f
-      
       updateSplatTransform()
       appendLog("Rotated to X: $configRotationX")
   }
 
   fun updateSplatTransform() {
       if (!::splatEntity.isInitialized) return
+      // Quaternion(x, y, z) - Euler angles in degrees
       val q = Quaternion(configRotationX, 0f, 0f)
       
       splatEntity.setComponent(Transform(Pose(Vector3(0f), q)))
@@ -352,6 +343,8 @@ class SplatSampleActivity : AppSystemActivity() {
     flightY = 0f 
     flightZ = 0f
     flightYaw = 0f
+    // Optional: configRotationX = 0f 
+    updateSplatTransform()
     updateViewOrigin()
     recenterPanel()
   }
@@ -361,10 +354,7 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun rescanSplats() {
-    appendLog("Rescan pressed")
-    // Reload config on rescan too!
     loadExternalConfig()
-    
     rebuildSplatList("user_rescan")
     val list = splatListState.value
     if (list.isEmpty()) {
@@ -438,7 +428,6 @@ class SplatSampleActivity : AppSystemActivity() {
     val uri = newSplatPath.toUri()
     
     if (!::splatEntity.isInitialized) {
-        appendLog("Creating new Splat entity...")
         initializeSplat(uri)
     } else {
         splatEntity.setComponent(Splat(uri))
