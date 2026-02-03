@@ -41,18 +41,13 @@ import com.meta.spatial.uiset.theme.SpatialTheme
 import com.meta.spatial.uiset.theme.darkSpatialColorScheme
 import com.meta.spatial.uiset.theme.lightSpatialColorScheme
 
-const val ANIMATION_PANEL_WIDTH = 2.048f
-const val ANIMATION_PANEL_HEIGHT = 1.254f
-
 private val panelHeadingText = "Splat Player"
 private val panelInstructionText = buildAnnotatedString {
-  append("Left Stick: Altitude & Yaw\n")
-  append("Right Stick: Move\n")
-  append("Press ")
+  append("Left Stick: Altitude/Yaw | Right Stick: Move\n")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("A") }
-  append(" to snap panel. ")
+  append(": Recenter Panel  ")
   withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) { append("B") }
-  append(" to reset.")
+  append(": Reset Flight")
 }
 
 private val selectedBlue = Color(0xFF1877F2)
@@ -63,8 +58,8 @@ fun ControlPanel(
     selectedIndex: MutableState<Int>,
     loadSplatFunction: (String) -> Unit,
     rescanFunction: () -> Unit,
+    rotateFunction: () -> Unit,
     debugLogLines: List<String>,
-    externalFolderPath: String,
 ) {
   SpatialTheme(colorScheme = getPanelTheme()) {
     Column(
@@ -89,21 +84,15 @@ fun ControlPanel(
           modifier = Modifier.padding(top = 8.dp),
       )
 
-      Spacer(modifier = Modifier.height(10.dp))
-
-      Text(
-          text = "Folder: .../files/",
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-      )
-
       Spacer(modifier = Modifier.height(12.dp))
 
+      // BUTTON ROW
       Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
       ) {
-        ActionButton(text = "Rescan Files", onClick = rescanFunction, modifier = Modifier.weight(1f))
+        ActionButton(text = "Rescan", onClick = rescanFunction, modifier = Modifier.weight(1f))
+        ActionButton(text = "Rotate 90°", onClick = rotateFunction, modifier = Modifier.weight(1f))
       }
 
       Spacer(modifier = Modifier.height(12.dp))
@@ -148,7 +137,7 @@ private fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier =
                   RoundedCornerShape(12.dp),
               )
               .clickable(onClick = onClick)
-              .padding(vertical = 10.dp, horizontal = 12.dp),
+              .padding(vertical = 12.dp),
       contentAlignment = Alignment.Center,
   ) {
     Text(
@@ -169,18 +158,11 @@ private fun EmptyState() {
               .padding(14.dp),
       contentAlignment = Alignment.CenterStart,
   ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = "No files found",
-          style = SpatialTheme.typography.headline2Strong,
-          color = LocalColorScheme.current.primaryAlphaBackground,
-      )
-      Text(
-          text = "Push .ply/.spz files to: /storage/emulated/0/Android/data/com.meta.spatial.samples.splatsample/files/",
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
-      )
-    }
+    Text(
+        text = "No files. Push .ply/.spz to /sdcard/Splats/",
+        style = SpatialTheme.typography.body1,
+        color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.7f),
+    )
   }
 }
 
@@ -200,53 +182,15 @@ private fun SplatRowItem(
               .clip(RoundedCornerShape(14.dp))
               .border(borderWidth, borderColor, RoundedCornerShape(14.dp))
               .clickable(onClick = onClick)
-              .padding(10.dp),
+              .padding(14.dp),
       horizontalArrangement = Arrangement.spacedBy(12.dp),
       verticalAlignment = Alignment.CenterVertically,
   ) {
-    PlaceholderPreviewTile(
-        label = getSplatDisplayName(splatPath),
-        isSelected = isSelected,
-        modifier =
-            Modifier
-                .height(88.dp)
-                .fillMaxWidth(0.32f)
-                .clip(RoundedCornerShape(10.dp)),
-    )
-
-    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = getSplatDisplayName(splatPath),
-          style = SpatialTheme.typography.headline2Strong,
-          color = titleColor,
-      )
-      Text(
-          text = getSplatShortPath(splatPath),
-          style = SpatialTheme.typography.body1,
-          color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.65f),
-      )
-    }
-  }
-}
-
-@Composable
-private fun PlaceholderPreviewTile(
-    label: String,
-    isSelected: Boolean,
-    modifier: Modifier = Modifier,
-) {
-  val bg =
-      if (isSelected) selectedBlue.copy(alpha = 0.14f)
-      else LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.08f)
-
-  Box(
-      modifier = modifier.background(bg).padding(10.dp),
-      contentAlignment = Alignment.BottomStart,
-  ) {
     Text(
-        text = label.take(24),
-        style = SpatialTheme.typography.body1,
-        color = LocalColorScheme.current.primaryAlphaBackground,
+        text = getSplatDisplayName(splatPath),
+        style = SpatialTheme.typography.headline2Strong,
+        color = titleColor,
+        modifier = Modifier.weight(1f)
     )
   }
 }
@@ -260,25 +204,15 @@ private fun DebugLogPanel(lines: List<String>) {
               .background(LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.06f))
               .padding(10.dp),
   ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-      Text(
-          text = "Debug log",
-          style = SpatialTheme.typography.headline2Strong,
-          color = LocalColorScheme.current.primaryAlphaBackground,
-      )
-
-      val show = lines.takeLast(8)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+      val show = lines.takeLast(4)
       if (show.isEmpty()) {
-        Text(
-            text = "(no log lines yet)",
-            style = SpatialTheme.typography.body1,
-            color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.65f),
-        )
+        Text(text = "Log...", style = SpatialTheme.typography.caption)
       } else {
         show.forEach { line ->
           Text(
               text = line,
-              style = SpatialTheme.typography.body1,
+              style = SpatialTheme.typography.caption,
               color = LocalColorScheme.current.primaryAlphaBackground.copy(alpha = 0.75f),
           )
         }
@@ -292,22 +226,5 @@ fun getPanelTheme(): SpatialColorScheme =
     if (isSystemInDarkTheme()) darkSpatialColorScheme() else lightSpatialColorScheme()
 
 fun getSplatDisplayName(splatPath: String): String {
-  val name =
-      splatPath
-          .removePrefix("apk://")
-          .removePrefix("file://")
-          .substringAfterLast("/")
-  return name
-      .removeSuffix(".spz")
-      .removeSuffix(".SPZ")
-      .removeSuffix(".ply")
-      .removeSuffix(".PLY")
-}
-
-fun getSplatShortPath(splatPath: String): String {
-  return when {
-    splatPath.startsWith("apk://") -> "Bundled asset"
-    splatPath.startsWith("file://") -> "Device file"
-    else -> "Path"
-  }
+  return splatPath.substringAfterLast("/").removeSuffix(".spz").removeSuffix(".ply")
 }
