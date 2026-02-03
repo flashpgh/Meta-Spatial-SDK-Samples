@@ -75,10 +75,9 @@ class SplatSampleActivity : AppSystemActivity() {
   private var gltfxEntity: Entity? = null
   private val activityScope = CoroutineScope(Dispatchers.Main)
 
-  private lateinit var environmentEntity: Entity
+  // System Entities
   private lateinit var skyboxEntity: Entity
   private lateinit var panelEntity: Entity
-  private lateinit var floorEntity: Entity
   private lateinit var splatEntity: Entity
 
   // UI state
@@ -88,15 +87,16 @@ class SplatSampleActivity : AppSystemActivity() {
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
+  private var hasLoggedInput = false 
 
   // --- CONFIG ---
-  private var configMoveSpeed = 0.5f // Default speed
+  private var configMoveSpeed = 0.5f 
   private var configTurnSpeed = 1.5f
   private var configRotationX = 0f 
   private var configScale = 1.0f
 
-  // Panel Distance
-  private val panelOffset = 2.0f 
+  // Menu Distance: 2.5m (Nice and far)
+  private val panelOffset = 2.5f 
   
   // Flight State
   private var flightX = 0f
@@ -139,19 +139,19 @@ class SplatSampleActivity : AppSystemActivity() {
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
-      // [FIX] CRITICAL: Disable collision on the Environment Mesh
-      // This prevents the Teleport Arc from finding a valid target.
-      environmentEntity = composition.getNodeByName("Environment").entity
-      val environmentMesh = environmentEntity.getComponent<Mesh>()
-      environmentMesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
-      environmentMesh.hittable = MeshCollision.NoCollision 
-      environmentEntity.setComponent(environmentMesh)
-
-      // [FIX] CRITICAL: Disable collision on the Floor Mesh
-      floorEntity = composition.getNodeByName("Floor").entity
-      val floorMesh = floorEntity.getComponent<Mesh>()
-      floorMesh.hittable = MeshCollision.NoCollision
-      floorEntity.setComponent(floorMesh)
+      // [NUCLEAR FIX] Disable collision on EVERYTHING loaded from the scene.
+      // This iterates every single object (Floor, Walls, Ceiling) and turns off collision.
+      // Without collision, the Teleport Arc fails, and our Drone Logic wins.
+      for (node in composition.nodes) {
+          val e = node.entity
+          if (e.hasComponent<Mesh>()) {
+              val mesh = e.getComponent<Mesh>()
+              mesh.hittable = MeshCollision.NoCollision
+              // Optional: Make it unlit so it looks cleaner
+              // mesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
+              e.setComponent(mesh)
+          }
+      }
 
       updateViewOrigin()
 
@@ -159,8 +159,6 @@ class SplatSampleActivity : AppSystemActivity() {
       if (initial != null) {
         initializeSplat(initial)
         setSplatVisibility(true)
-      } else {
-        setEnvironmentVisiblity(true)
       }
     }
   }
@@ -446,11 +444,13 @@ class SplatSampleActivity : AppSystemActivity() {
   fun setSplatVisibility(isSplatVisible: Boolean) {
     if (!::splatEntity.isInitialized) return
     splatEntity.setComponent(Visible(isSplatVisible))
-    setEnvironmentVisiblity(!isSplatVisible)
+    
+    // We do NOT toggle environment visibility anymore because we want the floor hidden/uncollidable
+    // setEnvironmentVisiblity(!isSplatVisible) 
   }
 
   fun setEnvironmentVisiblity(isVisible: Boolean) {
-    environmentEntity.setComponent(Visible(isVisible))
+    // Left as stub or use to hide skybox if needed
     skyboxEntity.setComponent(Visible(isVisible))
   }
 
