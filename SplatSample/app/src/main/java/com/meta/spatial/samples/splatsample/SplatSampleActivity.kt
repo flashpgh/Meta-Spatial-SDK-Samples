@@ -92,11 +92,12 @@ class SplatSampleActivity : AppSystemActivity() {
   // --- CONFIG ---
   private var configMoveSpeed = 0.5f 
   private var configTurnSpeed = 1.5f
-  private var configRotationX = 0f 
+  private var configRotationX = 180f // [FIX] Default to 180
   private var configScale = 1.0f
 
-  // Menu Distance: 2.5m (Nice and far)
-  private val panelOffset = 2.5f 
+  // [FIX] Dynamic Panel Distance
+  private var panelDistance = 1.2f 
+  private var isPanelNear = true
   
   // Flight State
   private var flightX = 0f
@@ -139,16 +140,16 @@ class SplatSampleActivity : AppSystemActivity() {
     defaultSplatPath = splatListState.value.firstOrNull()?.toUri()
 
     loadGLXF { composition ->
-      // [NUCLEAR FIX] Disable collision on EVERYTHING loaded from the scene.
-      // This iterates every single object (Floor, Walls, Ceiling) and turns off collision.
-      // Without collision, the Teleport Arc fails, and our Drone Logic wins.
+      // [NUCLEAR OPTION] Disable collision on EVERY NODE in the scene
+      // This ensures the Teleport Arc has absolutely nothing to hit.
+      // It iterates all nodes, regardless of name.
       for (node in composition.nodes) {
           val e = node.entity
           if (e.hasComponent<Mesh>()) {
               val mesh = e.getComponent<Mesh>()
               mesh.hittable = MeshCollision.NoCollision
-              // Optional: Make it unlit so it looks cleaner
-              // mesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
+              // Force Unlit so we don't get weird shadows on the invisible floor
+              mesh.defaultShaderOverride = SceneMaterial.UNLIT_SHADER
               e.setComponent(mesh)
           }
       }
@@ -245,7 +246,7 @@ class SplatSampleActivity : AppSystemActivity() {
     }
   }
 
-  // [FLIGHT LOGIC]
+  // [FLIGHT LOGIC - Android Input Override]
   override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
       if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
           event.action == MotionEvent.ACTION_MOVE) {
@@ -254,7 +255,6 @@ class SplatSampleActivity : AppSystemActivity() {
         val leftX = event.getAxisValue(MotionEvent.AXIS_X)
         val leftY = event.getAxisValue(MotionEvent.AXIS_Y)
         
-        // Handle right stick variations
         val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
         val ry = event.getAxisValue(MotionEvent.AXIS_RY)
         val z = event.getAxisValue(MotionEvent.AXIS_Z)
@@ -273,6 +273,7 @@ class SplatSampleActivity : AppSystemActivity() {
         val rotSpeed = 2.0f
 
         // 1. LEFT STICK: Altitude (Y) & Yaw (X)
+        // Note: Android Stick Y is usually inverted (Up is -1). 
         val throttle = -leftY
         val yawInput = -leftX
 
@@ -320,7 +321,7 @@ class SplatSampleActivity : AppSystemActivity() {
             updateViewOrigin()
         }
 
-        return true // Consumed event
+        return true // Consumed event (Prevents Teleport)
     }
     return super.dispatchGenericMotionEvent(event)
   }
@@ -341,7 +342,14 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   fun recenterPanel() {
-      positionPanelInFrontOfUser(panelOffset)
+      // [FIX] Toggle between Near (0.6m) and Far (2.0m) to help if stuck in wall
+      panelDistance = if (isPanelNear) 0.6f else 2.0f
+      positionPanelInFrontOfUser(panelDistance)
+  }
+
+  fun togglePanelDistance() {
+      isPanelNear = !isPanelNear
+      recenterPanel()
   }
 
   fun resetFlight() {
@@ -349,7 +357,6 @@ class SplatSampleActivity : AppSystemActivity() {
     flightY = 0f 
     flightZ = 0f
     flightYaw = 0f
-    // Optional: configRotationX = 0f 
     updateSplatTransform()
     updateViewOrigin()
     recenterPanel()
@@ -444,14 +451,12 @@ class SplatSampleActivity : AppSystemActivity() {
   fun setSplatVisibility(isSplatVisible: Boolean) {
     if (!::splatEntity.isInitialized) return
     splatEntity.setComponent(Visible(isSplatVisible))
-    
-    // We do NOT toggle environment visibility anymore because we want the floor hidden/uncollidable
-    // setEnvironmentVisiblity(!isSplatVisible) 
+    // Keep environment visible (but collision is off) so we have a floor reference
+    // setEnvironmentVisiblity(!isSplatVisible)
   }
 
   fun setEnvironmentVisiblity(isVisible: Boolean) {
-    // Left as stub or use to hide skybox if needed
-    skyboxEntity.setComponent(Visible(isVisible))
+    // skyboxEntity.setComponent(Visible(isVisible))
   }
 
   private fun positionPanelInFrontOfUser(distance: Float) {
@@ -479,10 +484,12 @@ class SplatSampleActivity : AppSystemActivity() {
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
+        // A Button: Toggle Distance (Near/Far) to rescue menu from walls
         if ((controller.changedButtons and ButtonBits.ButtonA) != 0 &&
             (controller.buttonState and ButtonBits.ButtonA) != 0) {
-          recenterPanel()
+          togglePanelDistance()
         }
+        // B Button: Reset Flight
         if ((controller.changedButtons and ButtonBits.ButtonB) != 0 &&
             (controller.buttonState and ButtonBits.ButtonB) != 0) {
           resetFlight()
