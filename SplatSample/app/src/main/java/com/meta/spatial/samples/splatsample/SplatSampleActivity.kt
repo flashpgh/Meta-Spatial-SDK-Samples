@@ -10,6 +10,8 @@ package com.meta.spatial.samples.splatsample
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.view.InputDevice
+import android.view.MotionEvent
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.net.toUri
@@ -74,20 +76,16 @@ class SplatSampleActivity : AppSystemActivity() {
   // UI state
   private val splatListState = mutableStateOf<List<String>>(emptyList())
   private val selectedIndex = mutableStateOf(0)
-
-  // Debug log lines shown in UI panel (last N lines)
   private val debugLogState = mutableStateOf<List<String>>(emptyList())
-
-  // External folder path displayed in UI (computed once)
   private val externalFolderPathState = mutableStateOf("(initializing...)")
 
   private var defaultSplatPath: Uri? = null
 
-  // Rotation applied to the Splat to align it with the scene coordinate system
+  // Ensure models stand upright
   private val eulerRotation = Vector3(0f, 0f, 0f)
 
   private val panelHeight = 1.5f
-  private val panelOffset = 1.5f // Closer panel
+  private val panelOffset = 1.5f
   private val defaultZ = 2f
 
   // Flight State
@@ -96,7 +94,12 @@ class SplatSampleActivity : AppSystemActivity() {
   private var flightZ = defaultZ
   private var flightYaw = 0f
 
-  // App-owned folder on headset storage
+  // Input State (Generic Motion Event)
+  private var leftStickX = 0f
+  private var leftStickY = 0f
+  private var rightStickX = 0f
+  private var rightStickY = 0f
+
   private val splatsFolderName = "splats"
   private var externalSplatsDir: File? = null
 
@@ -114,7 +117,6 @@ class SplatSampleActivity : AppSystemActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-
     appendLog("onCreate: start")
 
     NetworkedAssetLoader.init(
@@ -137,8 +139,6 @@ class SplatSampleActivity : AppSystemActivity() {
       environmentEntity.setComponent(environmentMesh)
 
       floorEntity = composition.getNodeByName("Floor").entity
-
-      // Initialize flight view immediately
       updateViewOrigin()
 
       val initial = defaultSplatPath
@@ -147,7 +147,7 @@ class SplatSampleActivity : AppSystemActivity() {
         initializeSplat(initial)
         setSplatVisibility(true)
       } else {
-        appendLog("No splats found. Push .ply/.spz to splats folder.")
+        appendLog("No splats found. Push .ply/.spz to files/splats.")
         setEnvironmentVisiblity(true)
       }
     }
@@ -166,8 +166,6 @@ class SplatSampleActivity : AppSystemActivity() {
     )
 
     scene.updateIBLEnvironment("environment.env")
-    
-    // Set initial view
     updateViewOrigin()
 
     skyboxEntity =
@@ -190,15 +188,112 @@ class SplatSampleActivity : AppSystemActivity() {
         )
 
     systemManager.registerSystem(ControllerListenerSystem())
-    // Register our new drone flight system
     systemManager.registerSystem(DroneFlightSystem())
   }
 
-  /** Called by UI panel */
+  // --- DRONE INPUT HANDLER (Standard Android API) ---
+  override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+    if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
+        event.action == MotionEvent.ACTION_MOVE) {
+
+        // Quest Controller Mapping on Android:
+        // Left Stick: AXIS_X, AXIS_Y
+        // Right Stick: AXIS_Z, AXIS_RZ (or sometimes RX/RY depending on OS version)
+        
+        leftStickX = event.getAxisValue(MotionEvent.AXIS_X)
+        leftStickY = event.getAxisValue(MotionEvent.AXIS_Y)
+        
+        // Check multiple axes for Right Stick to be safe
+        val rz = event.getAxisValue(MotionEvent.AXIS_RZ)
+        val ry = event.getAxisValue(MotionEvent.AXIS_RY)
+        val z = event.getAxisValue(MotionEvent.AXIS_Z)
+        val rx = event.getAxisValue(MotionEvent.AXIS_RX)
+
+        // Prioritize RZ/Z for standard mapping
+        rightStickY = if (Math.abs(rz) > 0.1f) rz else ry
+        rightStickX = if (Math.abs(z) > 0.1f) z else rx
+        
+        return true
+    }
+    return super.onGenericMotionEvent(event)
+  }
+
+  inner class DroneFlightSystem : SystemBase() {
+      private val moveSpeed = 0.05f
+      private val turnSpeed = 1.5f
+      private val deadzone = 0.1f
+
+      override fun execute() {
+          var hasInput = false
+
+          // Mode 2 Flight:
+          // Left Stick Y (Up/Down) -> Altitude
+          // Left Stick X (Left/Right) -> Yaw
+          // Right Stick Y (Up/Down) -> Forward/Back (Pitch)
+          // Right Stick X (Left/Right) -> Strafe (Roll)
+
+          // Throttle (Altitude) - Invert Y so Up is Up
+          val throttle = -leftStickY
+          val yawInput = -leftStickX
+
+          if (Math.abs(throttle) > deadzone) {
+              flightY += throttle * moveSpeed
+              hasInput = true
+          }
+          if (Math.abs(yawInput) > deadzone) {
+              flightYaw += yawInput * turnSpeed
+              hasInput = true
+          }
+
+          // Planar Movement
+          val pitch = -rightStickY
+          val roll = rightStickX
+
+          if (Math.abs(pitch) > deadzone || Math.abs(roll) > deadzone) {
+              val rads = Math.toRadians(flightYaw.toDouble())
+              val cosY = cos(rads).toFloat()
+              val sinY = sin(rads).toFloat()
+
+              val fwdX = sinY
+              val fwdZ = -cosY
+              val rightX = cosY
+              val rightZ = sinY
+
+              val dX = (fwdX * pitch) + (rightX * roll)
+              val dZ = (fwdZ * pitch) + (rightZ * roll)
+
+              flightX += dX * moveSpeed
+              flightZ += dZ * moveSpeed
+              hasInput = true
+          }
+
+          if (hasInput) {
+              updateViewOrigin()
+          }
+      }
+  }
+
+  fun recenterScene() {
+    flightX = 0f
+    flightY = 0f
+    flightZ = defaultZ
+    flightYaw = 0f
+    updateViewOrigin()
+    
+    panelEntity.setComponent(
+        Transform(Pose(Vector3(0f, panelHeight, flightZ - panelOffset), Quaternion(0f, 180f, 0f)))
+    )
+  }
+
+  private fun updateViewOrigin() {
+      scene.setViewOrigin(flightX, flightY, flightZ, flightYaw)
+  }
+
+  // --- STANDARD HELPERS ---
+
   fun rescanSplats() {
     appendLog("Rescan pressed")
-    rebuildSplatList(reason = "user_rescan")
-
+    rebuildSplatList("user_rescan")
     val list = splatListState.value
     if (list.isEmpty()) {
       selectedIndex.value = 0
@@ -210,22 +305,19 @@ class SplatSampleActivity : AppSystemActivity() {
   }
 
   private fun rebuildSplatList(reason: String) {
-    // MODIFIED: We ignore bundled splats to remove "Meta nonsense"
+    // Ignore bundled to keep it clean
     val bundled = emptyList<String>() 
     val external = discoverExternalSplats()
-
     val combined = (bundled + external).distinct()
     splatListState.value = combined
-
     appendLog("rebuildSplatList($reason): found ${combined.size} files")
   }
 
   private fun initExternalSplatsDir(): File? {
     val base = getExternalFilesDir(null)
     if (base == null) return null
-    val dir = File(base, splatsFolderName)
-    if (!dir.exists()) dir.mkdirs()
-    return dir
+    // Use root 'files' dir to match your ADB script
+    return base
   }
 
   private fun discoverExternalSplats(): List<String> {
@@ -257,10 +349,8 @@ class SplatSampleActivity : AppSystemActivity() {
                     )
                 ),
                 Scale(Vector3(1f)),
-                // MODIFIED: Removed SupportsLocomotion() to allow Drone Flight
             )
         )
-
     splatEntity.registerEventListener<SplatLoadEventArgs>(SplatLoadEventArgs.EVENT_NAME) { _, _ ->
       appendLog("Splat loaded EVENT")
       onSplatLoaded()
@@ -274,25 +364,15 @@ class SplatSampleActivity : AppSystemActivity() {
 
   fun loadSplat(newSplatPath: String) {
     appendLog("loadSplat: $newSplatPath")
-
-    if (!::splatEntity.isInitialized) {
-      appendLog("WARNING: splatEntity not initialized yet; ignoring")
-      return
-    }
+    if (!::splatEntity.isInitialized) return
 
     if (splatEntity.hasComponent<Splat>()) {
-      val splatComponent = splatEntity.getComponent<Splat>()
-      if (splatComponent.path.toString() == newSplatPath) {
-        return
-      }
-      splatEntity.setComponent(Splat(newSplatPath.toUri()))
-      setSplatVisibility(false)
-      recenterScene()
-    } else {
-      splatEntity.setComponent(Splat(newSplatPath.toUri()))
-      setSplatVisibility(false)
-      recenterScene()
+      if (splatEntity.getComponent<Splat>().path.toString() == newSplatPath) return
     }
+    
+    splatEntity.setComponent(Splat(newSplatPath.toUri()))
+    setSplatVisibility(false)
+    recenterScene()
   }
 
   fun setSplatVisibility(isSplatVisible: Boolean) {
@@ -304,25 +384,6 @@ class SplatSampleActivity : AppSystemActivity() {
   fun setEnvironmentVisiblity(isVisible: Boolean) {
     environmentEntity.setComponent(Visible(isVisible))
     skyboxEntity.setComponent(Visible(isVisible))
-  }
-
-  fun recenterScene() {
-    // Reset flight to origin
-    flightX = 0f
-    flightY = 0f
-    flightZ = defaultZ
-    flightYaw = 0f
-    
-    updateViewOrigin()
-    
-    panelEntity.setComponent(
-        Transform(Pose(Vector3(0f, panelHeight, flightZ - panelOffset), Quaternion(0f, 180f, 0f)))
-    )
-  }
-  
-  private fun updateViewOrigin() {
-      // Updates the user's camera position based on flight coordinates
-      scene.setViewOrigin(flightX, flightY, flightZ, flightYaw)
   }
 
   private fun positionPanelInFrontOfUser(distance: Float) {
@@ -337,98 +398,21 @@ class SplatSampleActivity : AppSystemActivity() {
     panelEntity.setComponent(Transform(Pose(newPosition, lookRotation)))
   }
 
-  // --- DRONE FLIGHT SYSTEM ---
-  // Controls:
-  // Left Stick: Up/Down (Y), Rotate (Yaw)
-  // Right Stick: Forward/Back (Z), Slide Left/Right (X)
-  inner class DroneFlightSystem : SystemBase() {
-      private val moveSpeed = 0.05f 
-      private val turnSpeed = 1.5f 
-      private val deadzone = 0.1f
-
-      override fun execute() {
-          val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
-          
-          var hasInput = false
-          
-          for (controllerEntity in controllers) {
-              val controller = controllerEntity.getComponent<Controller>()
-              if (!controller.isActive) continue
-              
-              val attachment = controllerEntity.tryGetComponent<AvatarAttachment>() ?: continue
-              
-              if (attachment.type == "left_controller") {
-                  // Left Stick: Throttle (Up/Down) & Yaw
-                  // Stick Up is usually negative Y in raw input, so we invert it for World Up
-                  val throttle = -controller.thumbstickY 
-                  val yawInput = -controller.thumbstickX
-                  
-                  if (Math.abs(throttle) > deadzone) {
-                      flightY += throttle * moveSpeed
-                      hasInput = true
-                  }
-                  if (Math.abs(yawInput) > deadzone) {
-                      flightYaw += yawInput * turnSpeed
-                      hasInput = true
-                  }
-              }
-              
-              if (attachment.type == "right_controller") {
-                  // Right Stick: Pitch (Forward/Back) & Roll (Strafe)
-                  val pitch = -controller.thumbstickY 
-                  val roll = controller.thumbstickX
-                  
-                  if (Math.abs(pitch) > deadzone || Math.abs(roll) > deadzone) {
-                      // Calculate forward vector based on current Yaw
-                      val rads = Math.toRadians(flightYaw.toDouble())
-                      val cosY = cos(rads).toFloat()
-                      val sinY = sin(rads).toFloat()
-                      
-                      // Standard trig for rotation
-                      val fwdX = sinY
-                      val fwdZ = -cosY
-                      val rightX = cosY
-                      val rightZ = sinY
-                      
-                      val dX = (fwdX * pitch) + (rightX * roll)
-                      val dZ = (fwdZ * pitch) + (rightZ * roll)
-                      
-                      flightX += dX * moveSpeed
-                      flightZ += dZ * moveSpeed
-                      hasInput = true
-                  }
-              }
-          }
-          
-          if (hasInput) {
-              updateViewOrigin()
-          }
-      }
-  }
-
   inner class ControllerListenerSystem : SystemBase() {
     override fun execute() {
       val controllers = Query.where { has(Controller.id) }.eval().filter { it.isLocal() }
       for (controllerEntity in controllers) {
         val controller = controllerEntity.getComponent<Controller>()
         if (!controller.isActive) continue
-
         val attachment = controllerEntity.tryGetComponent<AvatarAttachment>()
         if (attachment?.type != "right_controller") continue
 
-        // A Button: Bring Panel to user
-        if (
-            (controller.changedButtons and ButtonBits.ButtonA) != 0 &&
-                (controller.buttonState and ButtonBits.ButtonA) != 0
-        ) {
+        if ((controller.changedButtons and ButtonBits.ButtonA) != 0 &&
+            (controller.buttonState and ButtonBits.ButtonA) != 0) {
           positionPanelInFrontOfUser(panelOffset)
         }
-
-        // B Button: Reset Scene / Recenter
-        if (
-            (controller.changedButtons and ButtonBits.ButtonB) != 0 &&
-                (controller.buttonState and ButtonBits.ButtonB) != 0
-        ) {
+        if ((controller.changedButtons and ButtonBits.ButtonB) != 0 &&
+            (controller.buttonState and ButtonBits.ButtonB) != 0) {
           recenterScene()
         }
       }
